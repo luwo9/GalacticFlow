@@ -66,8 +66,9 @@ class Processor():
 
 
 class Processor_cond():
-    def __init__(self, R_halfs=3, feh_min=-1.5, ofe_min=-5, N_min=0):
-        self.R_halfs = R_halfs
+    def __init__(self, percentile1=95, percentile2=99, feh_min=-1.5, ofe_min=-5, N_min=0):
+        self.percentile1 = percentile1
+        self.percentile2 = percentile2
         self.feh_min = feh_min
         self.ofe_min = ofe_min
         self.N_min = N_min
@@ -116,21 +117,38 @@ class Processor_cond():
 
 
     #Data cleaning
-    def constraindata(self, Data, info=True):
+    def constraindata(self, Data, M_dm_old, info=True):
         Data_out = []
         N_stars = []
         M_stars = []
+        M_dm_new = []
         N_old = 0
-        for galaxy in Data:
+        for galaxy, M_dm in zip(Data, M_dm_old):
             N_old += galaxy.shape[0]
 
             #Constrains on stars
+
+            #Metallicity
             #No metallicity extreme stars
             is_valid = (galaxy[:,7] >=self.ofe_min)&(galaxy[:,8]>=self.feh_min)
-            #Get half mass R, all stars equal mass, estimate: take the median R (as many stars inside as outside)
-            R_halfmass = np.median(np.sqrt(np.sum(galaxy[:,:2]**2, axis=1)))
-            #Exclude stars to far out
-            is_valid = is_valid&(np.sqrt(np.sum(galaxy[:,:2]**2, axis=1))<=(self.R_halfs*R_halfmass))
+
+            #Distance
+            #Get radius for a given percentile of stars
+            R_max = np.percentile(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1)), self.percentile1)
+            #But cut at most at 25(>largest galaxy in smaple), dont include other structures
+            R_max = np.minimum(R_max, 25)
+            costrained_by_preset = R_max == 25
+            #Only stars within this radius
+            is_validR = (np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max))
+
+            #If the preset cut at 25 was applied e.g. due to an other structure
+            #Do another percentile constrain inside r=25, to exclude farout stars
+            if costrained_by_preset:
+                R_max2 = np.percentile(np.sqrt(np.sum(galaxy[is_validR,:3]**2, axis=1)), self.percentile2)
+                is_validR = is_validR&(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max2))
+
+            is_valid = is_valid&is_validR
+
 
 
             #Update Galaxy total mass by excluded stars, later update N stars
@@ -145,24 +163,27 @@ class Processor_cond():
                 Data_out.append(galaxy[:,np.array([True]*9+[False]+2*[True])]) # Exclude individual star masses, no longer needed
                 N_stars.append(N_star)
                 M_stars.append(np.sum(galaxy[:,9]))
+                M_dm_new.append(M_dm)
         
 
         N_stars = np.array(N_stars)
         M_stars = np.array(M_stars)
+        M_dm_new = np.array(M_dm_new)
 
         if info:
             print(f"Cut out {len(Data)-len(Data_out)} of {len(Data)} galaxies, {N_old-np.sum(N_stars)} of {N_old} stars (~{(N_old-np.sum(N_stars))/N_old*100 :.0f}%).")
 
-        return Data_out, N_stars, M_stars
+        return Data_out, N_stars, M_stars, M_dm_new
 
         
 
 
-    def Data_to_flow(self, Data_c):
+    def Data_to_flow(self, Data_c, log_learn=np.array([])):
         Data_p = torch.from_numpy(np.copy(Data_c)).type(torch.float)
 
-        ##DEBUG
-        Data_p[:,-1] = torch.log10(Data_p[:,-1])
+        #Components to learn in log
+        self.log_learn = log_learn
+        Data_p[:,self.log_learn] = torch.log10(Data_p[:,self.log_learn])
 
         self.mu = torch.from_numpy(Data_c.mean(axis=0)).type(torch.float)
         self.std = torch.from_numpy(Data_c.std(axis=0)).type(torch.float)
@@ -173,12 +194,16 @@ class Processor_cond():
 
     def sample_to_Data(self, raw):
         Data = raw*self.std+self.mu
+        Data[:,self.log_learn] = 10**(Data[:,self.log_learn])
         return Data.numpy()
 
-    def sample_Conditional(self, model, cond_indices, Condition):
+    def sample_Conditional(self, model, cond_indices, Condition, device="cuda"):
         #Format: Contition is (N,n_cond) array cond_indices has length n_cond
+        Cond_flow = np.copy(Condition)
+        Cond_flow[:,self.log_learn] = np.log10(Cond_flow[:,self.log_learn])
+        Cond_flow = torch.from_numpy((Cond_flow-(self.mu[cond_indices]))/(self.std[cond_indices])).to(device)
         model.eval()
         with torch.inference_mode():
-            res = (model.sample_Flow(Condition.shape[0], torch.from_numpy((Condition-(self.mu[cond_indices]))/(self.std[cond_indices])))).cpu() #Unsqueezed input
+            res = (model.sample_Flow(Condition.shape[0], Cond_flow)).cpu() #Unsqueezed input
 
         return res
