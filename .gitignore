@@ -1,38 +1,20 @@
-/CL_217_32_32_64_8_03split.png
-/CL_217_32_32_64_8_03split.pth
-/Evaluate.ipynb
-/Old
-/Plot1CL_217_32_32_64_8_03splittst.png
-/Plot2CL_217_32_32_64_8_03splittst.png
-/Plot3CL_217_32_32_64_8_03splittst.png
-/Plot4CL_217_32_32_64_8_03splittst.png
-/Plot_conditional_testdel.png
-/Plot_conditional_testdelN.pdf
-/Plot_conditional_testdelN.png
-/Plot_conditional_testdelfeh.pdf
-/Plot_conditional_testdelfeh.png
-/Plot_conditional_testdelfehv.pdf
-/Plot_conditional_testdelfehv.png
-/Plot_conditional_testdelofe.pdf
-/Plot_conditional_testdelofe.png
-/Plot_conditional_testdelofev.pdf
-/TEMP.npy
-/To_do
 /__pycache__
 /all_sims
 /all_sims_old
-/developVis.ipynb
-/developVis2.ipynb
-/developtest.ipynb
-/finallyfixed.ipynb
-/flow_torch_conditional.py
-/flowcode copy.py
-/g8.26e11.npy
-/nightrunner.py
-/processing copy.py
-/test.py
-/test1.ipynb
-/testpage.pdf
-/testpage.png
-/testtest.ipynb
+/Old
+/plots
 /zzz
+/saves
+developtest.ipynb
+developVis.ipynb
+developVis2.ipynb
+Evaluate.ipynb
+finallyfixed.ipynb
+flowcode copy.py
+nightrunner.py
+processing copy.py
+TEMP.npy
+test.py
+test1.ipynb
+testtest.ipynb
+To_do
