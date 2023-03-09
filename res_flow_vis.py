@@ -1,6 +1,7 @@
 import seaborn as sns
 import pandas as pd
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 #from scipy.stats import binned_statistic_2d as bs2d
 
@@ -37,7 +38,7 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
         ax.set_aspect("equal", adjustable="datalim")
     plt.delaxes(axs1[0][1])
     
-    plt.savefig(f"Plot1{label}.{format_}", format=format_, dpi=dpi)
+    plt.savefig(f"plots/Plot1{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
     
     #2D Hists
@@ -78,7 +79,7 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
             axi.set_ylim(-maxr,maxr)
 
 
-    plt.savefig(f"Plot2{label}.{format_}", format=format_, dpi=dpi)
+    plt.savefig(f"plots/Plot2{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
     
     #Histograms
@@ -95,7 +96,7 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     
     plt.delaxes(axs2[11])
     plt.delaxes(axs2[10])
-    plt.savefig(f"Plot3{label}.{format_}", format=format_, dpi=dpi)
+    plt.savefig(f"plots/Plot3{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
     
     #Cornerplot
@@ -106,7 +107,7 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
         
         sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue="select", diag_kind="kde")
         
-        plt.savefig(f"Plot4{label}.{format_}", format=format_, dpi=dpi)
+        plt.savefig(f"plots/Plot4{label}.{format_}", format=format_, dpi=dpi)
         plt.show()
 
 
@@ -123,7 +124,7 @@ def loss_plot(losses, tot_time=None, savefig=None, format="png"):
     plt.ylabel("<loss>$_{50}$")
     plt.title("Loss curve")
     if savefig:
-        plt.savefig(f"{savefig}.{format}", dpi=300, format=format)
+        plt.savefig(f"plots/{savefig}.{format}", dpi=300, format=format)
     
     plt.show()
 
@@ -135,8 +136,9 @@ def sortgalaxies(Galaxies, Masses):
 
 page_plot_layout = (10, 7) #(8, 6)
 n_row_all = 4
+comp_names = "xyz"
 
-def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=100, cmap="viridis"):
+def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=100, cmap="viridis", comps=(0,1)):
     #Initialize
     #Data
     Galaxies_sorted, Masses_sorted = sortgalaxies(Galaxies, Masses)
@@ -156,9 +158,11 @@ def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=
     
     bins = "log" if scale == "log" else None
 
-    fig, axs = plt.subplots(*plot_layout, figsize=figsize)
+    #Layout
+    fig, axs = plt.subplots(*plot_layout, figsize=figsize, layout="constrained")
     axs = axs.ravel()
 
+    #Global scaling
     for ax, galaxy, mass in zip(axs, Galaxies_sorted, Masses_sorted):
         if type == "ofe":
             statistic = galaxy[:,7]
@@ -173,13 +177,30 @@ def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=
             statistic = None
             vmin, vmax = None, None
 
-        ax.hexbin(galaxy[:,0], galaxy[:,1], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
+        im = ax.hexbin(galaxy[:,comps[0]], galaxy[:,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
+        #print(np.percentile(im.get_array().data,99.4))
+        #print(im.get_array().data.max())
+        #ax.clear()
+        #im = ax.hexbin(galaxy[:,comps[0]], galaxy[:,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
         #ax.set_title(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")}, M = {mass:.2e}')
         ax.set_title(f"M = {mass:.2e}", fontsize=5, pad=1)
-        ax.set_xlabel("x", fontsize=5, labelpad=1)
-        ax.set_ylabel("y", fontsize=5, labelpad=1)
-        ax.set_xticks([])
-        ax.set_yticks([])
+        ax.set_xlabel(comp_names[comps[0]], fontsize=5, labelpad=0.2)
+        ax.set_ylabel(comp_names[comps[1]], fontsize=5, labelpad=0.1)
+
+        #Facecolor
+        ax.set_facecolor(matplotlib.colormaps[cmap](0))
+
+        #No ticks
+        #ax.set_xticks([])
+        #ax.set_yticks([])
+        #Small, fitting ticks
+        ax.tick_params(axis="both", labelsize=5, length=2.5, pad=0.5)
+        ax.set_adjustable("datalim")
+        ax.set_aspect("equal")
+
+    #Whole figure title + colorbar
+    fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")} in dependency of M')
+    plt.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
 
     #Delete axis left over
     n_not_used = len(Galaxies_sorted)-plot_layout[0]*plot_layout[1]
@@ -187,8 +208,8 @@ def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=
         for not_used in axs[n_not_used:]:
             plt.delaxes(not_used)
 
-    plt.subplots_adjust(hspace=0.45)
+    #plt.subplots_adjust(hspace=0.45)
     format = "pdf" if show == "page" else "png"
-    plt.savefig(f"Plot_conditional_{label}.{format}", dpi=300, format=format)
+    #plt.close()
+    plt.savefig(f"plots/Plot_conditional_{label}.{format}", dpi=300, format=format)
     plt.show()
-#all or (,) axis passend usw massenreiche ::2 ? + keyword age etc + log lin keyword? + keword Flow/Data for title ? + gridsize?
