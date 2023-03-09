@@ -138,7 +138,44 @@ page_plot_layout = (10, 7) #(8, 6)
 n_row_all = 4
 comp_names = "xyz"
 
-def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=100, cmap="viridis", comps=(0,1)):
+def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", v_pre=None):
+    """
+    Plot galaxies from given data sorted by mass.
+
+    Parameters
+    ----------
+
+    Galaxies: list or iterable of array
+        This contains the data of the galaxies.
+    Masses: array_like
+        Masses of the galaxies.
+    type: {"feh", "ofe", "N"}
+        Determines the type of plot. "N" means a histogram of stars. "feh" or "ofe" means average [Fe/H] or [O/Fe] map, respectivley.
+    label: str
+        Identifing label for naming the saved file.
+    show: {"page", "all"}, default: "page"
+        Weather to plot a preset number of galaxies specified by page_plot_layout (default 70) to be fitting on an page and saved as pdf.
+        Or to plot all galaxies in larger scale and save as png. In the former case galaxies of median masses get taken out while highest and
+        lowest masses are alway plotted.
+    scale: None or {"lin", "log"}, default: None
+        Color scaling of the plots. ``None`` will result in linear scaling for [O/Fe] and [Fe/H] and log scaling for N.
+    gridsize: int or (int, int), default: 100
+        Gridsize for binned plot.
+    cmap: None or str, default: None
+        Colormap to be used in the plots. ``None`` means "magma" for N, and "coolwarm" otherwise.
+    comps: (0 <= int < 3, 0 <= int < 3), default: (0, 1)
+        Components to plot on the x and y axis, respectivley.
+    color: {"global", "individual"}, default: "global"
+        Weather all subplots share the same color scale, or all subplots scale on their individual maxima and minima. The former returns
+        the used scale for reuse as pre-set values in another plot for better comparison.
+    v_pre: None or (float, float), default: None
+        Preset minimum and maximum value for scaling color. Applies to all plots. `None` means to calculate the scaling values from the data. See ``color``.
+    """
+
+    #Standard colormap
+    if cmap == None:
+        cmap = "magma" if type == "N" else "coolwarm"
+
     #Initialize
     #Data
     Galaxies_sorted, Masses_sorted = sortgalaxies(Galaxies, Masses)
@@ -156,43 +193,61 @@ def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=
         plot_layout = (-(len(Galaxies)//-n_row_all), n_row_all)
         figsize = (16, 4*plot_layout[0])
     
+    #Sclaing log/lin
+    if scale is None:
+        scale = "log" if type == "N" else "lin"
     bins = "log" if scale == "log" else None
 
-    #Layout
+    #Get global scaling values
+    if color == "global" and v_pre == None:
+        vmax = -100
+        vmin = 100
+        for galaxy in Galaxies_sorted:
+            if type == "ofe":
+                statistic = galaxy[:,7]
+            elif type == "feh":
+                statistic = galaxy[:,8]
+            else:
+                statistic = None
+        
+            res = plt.hexbin(galaxy[:,comps[0]], galaxy[:,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True)
+            plt.close()
+            bin_results = res.get_array().data
+            vmax = np.maximum(bin_results.max(), vmax)
+            vmin = np.minimum(bin_results.min(), vmin)
+        vmin = 1 if type=="N" else vmin
+    elif color == "global":
+        vmin, vmax = v_pre
+    else:
+        vmin, vmax = None, None
+
+    #Plot layout
     fig, axs = plt.subplots(*plot_layout, figsize=figsize, layout="constrained")
     axs = axs.ravel()
 
-    #Global scaling
+    #Make plots
     for ax, galaxy, mass in zip(axs, Galaxies_sorted, Masses_sorted):
         if type == "ofe":
             statistic = galaxy[:,7]
-            ##Debug
-            vmin = -5
-            vmax = 0.678
         elif type == "feh":
             statistic = galaxy[:,8]
-            vmin = -1.5
-            vmax = 0.757
         else:
             statistic = None
-            vmin, vmax = None, None
 
         im = ax.hexbin(galaxy[:,comps[0]], galaxy[:,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
-        #print(np.percentile(im.get_array().data,99.4))
-        #print(im.get_array().data.max())
-        #ax.clear()
-        #im = ax.hexbin(galaxy[:,comps[0]], galaxy[:,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
-        #ax.set_title(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")}, M = {mass:.2e}')
+        
         ax.set_title(f"M = {mass:.2e}", fontsize=5, pad=1)
         ax.set_xlabel(comp_names[comps[0]], fontsize=5, labelpad=0.2)
         ax.set_ylabel(comp_names[comps[1]], fontsize=5, labelpad=0.1)
 
         #Facecolor
-        ax.set_facecolor(matplotlib.colormaps[cmap](0))
+        if type=="N":
+            ax.set_facecolor(matplotlib.colormaps[cmap](0))
 
         #No ticks
         #ax.set_xticks([])
         #ax.set_yticks([])
+
         #Small, fitting ticks
         ax.tick_params(axis="both", labelsize=5, length=2.5, pad=0.5)
         ax.set_adjustable("datalim")
@@ -200,7 +255,8 @@ def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=
 
     #Whole figure title + colorbar
     fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")} in dependency of M')
-    plt.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
+    if color == "global":
+        plt.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
 
     #Delete axis left over
     n_not_used = len(Galaxies_sorted)-plot_layout[0]*plot_layout[1]
@@ -208,8 +264,11 @@ def plot_conditional(Galaxies, Masses, type, show, label, scale="lin", gridsize=
         for not_used in axs[n_not_used:]:
             plt.delaxes(not_used)
 
-    #plt.subplots_adjust(hspace=0.45)
+    #Save and show
     format = "pdf" if show == "page" else "png"
-    #plt.close()
     plt.savefig(f"plots/Plot_conditional_{label}.{format}", dpi=300, format=format)
     plt.show()
+
+    #Return scale values
+    if color == "global" and v_pre == None:
+        return vmin, vmax
