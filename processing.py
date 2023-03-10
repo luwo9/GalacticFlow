@@ -1,6 +1,20 @@
 import numpy as np
 import torch
 import glob
+from sklearn.decomposition import PCA
+
+
+def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
+    image = np.histogram2d(galaxy[:,0], galaxy[:,1], bins=resolution)[0]
+    fit = PCA(n_components=2).fit(np.argwhere(image>=np.quantile(image, quant)))
+    angle = np.arctan2(*fit.components_[1])
+    rot_mat = np.array([[np.cos(-angle), -np.sin(-angle)],
+                        [np.sin(-angle), np.cos(-angle)]])
+    galaxy_rot = np.copy(galaxy)
+    galaxy_rot[:,:2] = galaxy_rot[:,:2]@rot_mat
+    return galaxy_rot
+
+
 
 
 class Processor():
@@ -135,14 +149,15 @@ class Processor_cond():
             #Distance
             #Get radius for a given percentile of stars
             R_max = np.percentile(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1)), self.percentile1)
-            #But cut at most at 25(>largest galaxy in smaple), dont include other structures
-            R_max = np.minimum(R_max, 25)
-            costrained_by_preset = R_max == 25
+            #But cut at most at R_MAX_MAX(>largest galaxy in sample), dont include other structures
+            R_MAX_MAX = 27.7
+            R_max = np.minimum(R_max, R_MAX_MAX)
+            costrained_by_preset = R_max == R_MAX_MAX
             #Only stars within this radius
             is_validR = (np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max))
 
-            #If the preset cut at 25 was applied e.g. due to an other structure
-            #Do another percentile constrain inside r=25, to exclude farout stars
+            #If the preset cut at R_MAX_MAX was applied e.g. due to an other structure
+            #Do another percentile constrain inside r=R_MAX_MAX, to exclude farout stars
             if costrained_by_preset:
                 R_max2 = np.percentile(np.sqrt(np.sum(galaxy[is_validR,:3]**2, axis=1)), self.percentile2)
                 is_validR = is_validR&(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max2))
@@ -160,6 +175,9 @@ class Processor_cond():
 
             #Constrain on galaxies (number of stars)
             if N_star>=self.N_min:
+                #Rotate the glaxy in the x-y plane so that it is horizontal
+                galaxy = rotate_galaxy_xy(galaxy, quant=0.9)
+
                 Data_out.append(galaxy[:,np.array([True]*9+[False]+2*[True])]) # Exclude individual star masses, no longer needed
                 N_stars.append(N_star)
                 M_stars.append(np.sum(galaxy[:,9]))
