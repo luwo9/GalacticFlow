@@ -203,8 +203,10 @@ class Processor_cond():
         self.log_learn = log_learn
         Data_p[:,self.log_learn] = torch.log10(Data_p[:,self.log_learn])
 
-        self.mu = torch.from_numpy(Data_c.mean(axis=0)).type(torch.float)
-        self.std = torch.from_numpy(Data_c.std(axis=0)).type(torch.float)
+        #Subtract mean from all values and divide by std to normalize data
+        self.mu = Data_p.mean(dim=0)
+        self.std = Data_p.std(dim=0)
+
         Data_p -= self.mu
         Data_p /= self.std
         return Data_p
@@ -215,13 +217,25 @@ class Processor_cond():
         Data[:,self.log_learn] = 10**(Data[:,self.log_learn])
         return Data.numpy()
 
-    def sample_Conditional(self, model, cond_indices, Condition, device="cuda"):
+    def sample_Conditional(self, model, cond_indices, Condition, device="cuda", split_size=300000):
         #Format: Contition is (N,n_cond) array cond_indices has length n_cond
-        Cond_flow = np.copy(Condition)
-        Cond_flow[:,self.log_learn] = np.log10(Cond_flow[:,self.log_learn])
-        Cond_flow = torch.from_numpy((Cond_flow-(self.mu[cond_indices]))/(self.std[cond_indices])).to(device)
-        model.eval()
-        with torch.inference_mode():
-            res = (model.sample_Flow(Condition.shape[0], Cond_flow)).cpu() #Unsqueezed input
+        Cond_flow = torch.from_numpy(np.copy(Condition)).type(torch.float)
+        
+        #Transform condition to log if trained in log
+        is_log_learn = np.isin(np.sort(cond_indices), self.log_learn)
+        Cond_flow[:, is_log_learn] = torch.log10(Cond_flow[:, is_log_learn])
 
-        return res
+        #Scale condition as used for training
+        Cond_flow = (Cond_flow-(self.mu[cond_indices]))/(self.std[cond_indices])
+
+        #Evaluate the model, use only stacks of split_size because GPU memory is limited
+        #Here e.g. sampling 3*10^7 points with 10 components each, with 3*10^7 points already occupied by the condition + model on GPU needs more than the 10GB available
+        model.eval()
+        sample = []
+        with torch.inference_mode():
+            for split in torch.split(Cond_flow, split_size):
+                res = (model.sample_Flow(split.shape[0], split.to(device))).cpu() #Unsqueezed input
+                sample.append(res)
+        sample = torch.vstack(sample)
+
+        return torch.hstack((sample, torch.from_numpy(Condition).type(torch.float)))
