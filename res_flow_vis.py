@@ -5,7 +5,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 #from scipy.stats import binned_statistic_2d as bs2d
 
-
+standard_zoomout = 1.2
+comp_names = "xyz"
 
 def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     
@@ -15,70 +16,94 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     
     
     #2D Plots xyz corner
-    fig1, axs1 = plt.subplots(2,2, sharex = "col", sharey = False, figsize=(12,12))
-    axs1[0][0].scatter(data_true[0], data_true[1], label = "Data", s=0.2)
-    axs1[0][0].scatter(data_flow[0], data_flow[1], label = "Flow", s=0.2)
-    axs1[0][0].set_xlabel("x")
-    axs1[0][0].set_ylabel("y")
-    axs1[0][0].set_title("Scatter plot in xy-plane")
+    ind_array = np.array([[0,1],[0,2],[1,2]])
+    ax_ind_array = np.array([[0,0],[1,0],[1,1]])
 
-    axs1[1][0].scatter(data_true[0], data_true[2], label = "Data", s=0.2)
-    axs1[1][0].scatter(data_flow[0], data_flow[2], label = "Flow", s=0.2)
-    axs1[1][0].set_xlabel("x")
-    axs1[1][0].set_ylabel("z")
-    axs1[1][0].set_title("Scatter plot in xz-plane")
+    vmax = -100
+    vmin = 1
+    for ind1, ind2 in ind_array:
+        res = plt.hexbin(data_true[ind1], data_true[ind2], gridsize=150, cmap="magma", bins="log")
+        plt.close()
+        bin_results = res.get_array().data
+        vmax = np.maximum(bin_results.max(), vmax)
+        #vmin = np.minimum(bin_results.min(), vmin)
 
-    axs1[1][1].scatter(data_true[1], data_true[2], label = "Data", s=0.2)
-    axs1[1][1].scatter(data_flow[1], data_flow[2], label = "Flow", s=0.2)
-    axs1[1][1].set_xlabel("y")
-    axs1[1][1].set_ylabel("z")
-    axs1[1][1].set_title("Scatter plot in yz-plane")
+
+
+    fig1, axs1 = plt.subplots(2,4, sharex = "all", sharey = "all", figsize=(16,8), layout="compressed")
+    #Data first
+    lim_max = 10**-6
+    for (ind1, ind2), (ax_ind1, ax_ind2) in zip(ind_array, ax_ind_array):
+        ax = axs1[ax_ind1][ax_ind2]
+        im1 = ax.hexbin(data_true[ind1], data_true[ind2], gridsize=150, cmap="magma", bins="log", vmin=vmin, vmax=vmax)
+        ax.set_xlabel(comp_names[ind1] if ax_ind1 == 1 else "")
+        ax.set_ylabel(comp_names[ind2] if ax_ind2 == 0 else "")
+        ax.text(0.02, 0.98, "Data", ha="left", va="top", transform=ax.transAxes, color="white")
+        lim_max = np.maximum(np.max(np.abs(ax.get_xlim()+ax.get_ylim())), lim_max)
     
+    lim_max *= standard_zoomout
+
+    ax_ind_array[:,1] += 2
+    for (ind1, ind2), (ax_ind1, ax_ind2) in zip(ind_array, ax_ind_array):
+        include = (data_flow[ind1]<=lim_max)&(data_flow[ind2]<=lim_max)
+        ax = axs1[ax_ind1][ax_ind2]
+        im1 = ax.hexbin(data_flow[ind1,include], data_flow[ind2,include], gridsize=int(150*standard_zoomout), cmap="magma", bins="log", vmin=vmin, vmax=vmax)
+        ax.set_xlabel(comp_names[ind1] if ax_ind1 == 1 else "")
+        ax.set_ylabel(comp_names[ind2] if ax_ind2 == 0 else "")
+        ax.text(0.02, 0.98, "Flow", ha="left", va="top", transform=ax.transAxes, color="white")
+
+
     for ax in axs1.ravel():
-        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlim(-lim_max,lim_max)
+        ax.set_ylim(-lim_max,lim_max)
+        ax.set_box_aspect(1)
+        ax.set_facecolor(matplotlib.colormaps["magma"](0))
+
+    fig1.suptitle("<N> corner plot. Left: data, right: sample")
+    plt.colorbar(im1, ax=axs1, pad=0.03, aspect=33, shrink=1)
+
     plt.delaxes(axs1[0][1])
+    plt.delaxes(axs1[0][3])
     
     plt.savefig(f"plots/Plot1{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
     
     #2D Hists
-    fig3, axs3 = plt.subplots(2,4, figsize=(18,9))
-    maxr = np.abs(data_true[:2]).max()*1.5
-    is_inside_maxr = (data_flow[0]<=maxr)&(data_flow[1]<=maxr)
-    for i, (ax, true, flow, name) in enumerate(zip(axs3.T, data_true[-4:], data_flow[-4:], names[-4:])):
+    fig3, axs3 = plt.subplots(2,3, figsize=(18,12), sharex="all", sharey="all", layout="compressed")
 
+    lim_max = 10**-6
+    vmins = []
+    vmaxs = []
+    for i, (ax, true, name) in enumerate(zip(axs3[0], data_true[7:], names[-3:])):
         name = f"<{name}>"
-        #Exlude non clear cuts for similar color and values to far out for similar resolution
-        if i==0:
-            name = "log<N>"
-            true = None
-            flow1 = None
-            cond_corr = is_inside_maxr
-            bins = "log"
-            ax[0].set_facecolor((0.2298057, 0.298717966, 0.753683153, 1.0))
-            ax[1].set_facecolor((0.2298057, 0.298717966, 0.753683153, 1.0))
-        else:
-            cond_corr = (flow<=true.max())&(flow>=true.min())&(is_inside_maxr)
-            flow1 = flow[cond_corr]
-            bins = None
+        bins = "log" if i == 2 else None
+        im2 = ax.hexbin(data_true[0], data_true[1], C=true, gridsize=150, cmap="coolwarm", bins=bins)
+        vmins.append(im2.get_array().data.min())
+        vmaxs.append(im2.get_array().data.max())
 
-        '''binned = bs2d(data_true[0], data_true[1], values=true, bins=100)
-        ax[0].pcolormesh(binned.x_edge, binned.y_edge, binned.statistic, cmap="coolwarm")'''
-        ax[0].hexbin(data_true[0], data_true[1], C=true, gridsize=150, cmap="coolwarm", bins=bins)
-        ax[0].set_title(f"Data {name}")
+        ticks_cb = np.array([1, 2, 4, 6, 8, 10, 12]) if i == 2 else None
+        cbar3 = fig3.colorbar(im2, ax=axs3[:,i], pad=0.03, aspect=33, location="bottom", shrink=0.95, ticks=ticks_cb)
+        if i == 2:
+            cbar3.ax.set_xticklabels(ticks_cb)
+            cbar3.ax.minorticks_off()
+        ax.set_title(f"Data {name}")
+        lim_max = np.maximum(np.max(np.abs(ax.get_xlim()+ax.get_ylim())), lim_max)
 
+    lim_max *= standard_zoomout
 
-        '''binned = bs2d(data_flow[0,cond_corr], data_flow[1,cond_corr], values=flow1, bins=100)
-        ax[1].pcolormesh(binned.x_edge, binned.y_edge, binned.statistic, cmap="coolwarm")'''
-        ax[1].hexbin(data_flow[0,cond_corr], data_flow[1,cond_corr], C=flow1, gridsize=int(150*1.5), cmap="coolwarm", bins=bins)
-        ax[1].set_title(f"Flow sample {name}")
-        for axi in ax:
-            axi.set_xlabel("x")
-            axi.set_ylabel("y")
-            axi.set_xlim(-maxr,maxr)
-            axi.set_ylim(-maxr,maxr)
+    for i, (ax, flow, name, vmin, vmax) in enumerate(zip(axs3[1], data_flow[7:], names[-3:], vmins, vmaxs)):
+        name = f"<{name}>"
+        include = (data_flow[0]<=lim_max)&(data_flow[1]<=lim_max)
+        bins = "log" if i == 2 else None
+        ax.hexbin(data_flow[0,include], data_flow[1,include], C=flow[include], gridsize=int(150*standard_zoomout), cmap="coolwarm", vmin=vmin, vmax=vmax, bins=bins)
+        ax.set_title(f"Flow sample {name}")
 
+    for ax in axs3.ravel():
+        ax.set_box_aspect(1)
+        ax.set_xlim(-lim_max,lim_max)
+        ax.set_ylim(-lim_max,lim_max)
 
+    
     plt.savefig(f"plots/Plot2{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
     
@@ -101,11 +126,12 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     
     #Cornerplot
     if True:
-        data_corner = np.hstack((data_true[:,::700], data_flow[:,::700]))
+        every = data_flow.shape[1]//1000
+        data_corner = np.hstack((data_true[:,::every], data_flow[:,::every]))
         data_dict = dict(zip(names, data_corner))
-        data_dict["select"] = np.append(np.full(data_true[:,::700].shape[1],"data"),np.full(data_flow[:,::700].shape[1],"model"))
+        data_dict["select"] = np.append(np.full(data_true[:,::every].shape[1],"data"),np.full(data_flow[:,::every].shape[1],"model"))
         
-        sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue="select", diag_kind="kde")
+        sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue="select", diag_kind="kde", diag_kws ={"common_norm":False})
         
         plt.savefig(f"plots/Plot4{label}.{format_}", format=format_, dpi=dpi)
         plt.show()
@@ -124,7 +150,7 @@ def loss_plot(losses, tot_time=None, savefig=None, format="png"):
     plt.ylabel("<loss>$_{50}$")
     plt.title("Loss curve")
     if savefig:
-        plt.savefig(f"plots/{savefig}.{format}", dpi=300, format=format)
+        plt.savefig(f"plots/loss_{savefig}.{format}", dpi=300, format=format)
     
     plt.show()
 
@@ -134,11 +160,18 @@ def sortgalaxies(Galaxies, Masses):
     return [Galaxies[i] for i in order], Masses[order]
 
 
+def xylim(Galaxies, xylim_array, comps=(0,1)):
+    Galaxies_out = []
+    for galaxy, lim in zip(Galaxies,xylim_array):
+        include = (lim[0] <= galaxy[:,comps[0]] <= lim[1])&(lim[2] <= galaxy[:,comps[1]] <= lim[3])
+        galaxy = galaxy[include]
+        Galaxies_out.append(galaxy)
+    return Galaxies_out
+
 page_plot_layout = (10, 7) #(8, 6)
 n_row_all = 4
-comp_names = "xyz"
 
-def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", v_pre=None):
+def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", v_pre=None, lim_pre=None):
     """
     Plot galaxies from given data sorted by mass.
 
@@ -225,16 +258,30 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
     fig, axs = plt.subplots(*plot_layout, figsize=figsize, layout="constrained")
     axs = axs.ravel()
 
+    #Initialize saving new limits
+    if lim_pre is None:
+        lim_pre_new = np.zeros((len(Galaxies_sorted),4))
+
     #Make plots
-    for ax, galaxy, mass in zip(axs, Galaxies_sorted, Masses_sorted):
+    for i, (ax, galaxy, mass) in enumerate(zip(axs, Galaxies_sorted, Masses_sorted)):
+
+        #Apply preset x/y limits on data
+        if lim_pre is not None:
+            include = (lim_pre[i][0]<=galaxy[:,comps[0]]<=lim_pre[i][1])&(lim_pre[i][2]<=galaxy[:,comps[1]]<=lim_pre[i][3])
+            gridsize = int(gridsize*standard_zoomout)
+        else:
+            include = np.full(galaxy.shape[0], True)
+        ic = include
+
+        #Prepare right type to be plotted
         if type == "ofe":
-            statistic = galaxy[:,7]
+            statistic = galaxy[ic,7]
         elif type == "feh":
-            statistic = galaxy[:,8]
+            statistic = galaxy[ic,8]
         else:
             statistic = None
 
-        im = ax.hexbin(galaxy[:,comps[0]], galaxy[:,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
+        im = ax.hexbin(galaxy[ic,comps[0]], galaxy[ic,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
         
         ax.set_title(f"M = {mass:.2e}", fontsize=5, pad=1)
         ax.set_xlabel(comp_names[comps[0]], fontsize=5, labelpad=0.2)
@@ -250,8 +297,22 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
 
         #Small, fitting ticks
         ax.tick_params(axis="both", labelsize=5, length=2.5, pad=0.5)
-        ax.set_adjustable("datalim")
+
         ax.set_aspect("equal")
+        ax.set_box_aspect(1)
+
+        #Get x/y lims to be set and potentially saved
+        if lim_pre is None:
+            s_z = standard_zoomout
+            x_lim_new = (ax.get_xlim()[0]*s_z, ax.get_xlim()[1]*s_z)
+            y_lim_new = (ax.get_ylim()[0]*s_z, ax.get_ylim()[1]*s_z)
+            lim_pre_new[i] = np.array([*x_lim_new,*y_lim_new])
+        else:
+            x_lim_new = tuple(lim_pre[i][:2])
+            x_lim_new = tuple(lim_pre[i][-2:])
+        
+        ax.set_xlim(x_lim_new)
+        ax.set_ylim(y_lim_new)
 
     #Whole figure title + colorbar
     fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")} in dependency of M')
@@ -270,5 +331,7 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
     plt.show()
 
     #Return scale values
-    if color == "global" and v_pre == None:
+    if color == "global" and v_pre == None and lim_pre is None:
+        return vmin, vmax, lim_pre_new
+    elif color == "global" and v_pre == None:
         return vmin, vmax
