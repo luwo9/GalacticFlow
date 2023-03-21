@@ -7,7 +7,7 @@ import itertools
 import time
 
 #Choose device
-device = "cuda"
+device = "cuda:5"
 
 
 # MLP
@@ -400,7 +400,7 @@ class NSFlow(nn.Module):
 
 
 
-def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, print_fn=None, **print_fn_kwargs):
+def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, gamma=0.998, print_fn=None, **print_fn_kwargs):
     #Infos to printout
     
     n_steps = data.shape[0]*epochs//batch_size+1
@@ -412,7 +412,7 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
     else:
         optimizer = optimizer_obj
     
-    lr_schedule = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.993)
+    lr_schedule = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=gamma)
     
     start_time = time.perf_counter()
     
