@@ -5,6 +5,25 @@ from sklearn.decomposition import PCA
 
 
 def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
+    """
+    Rotate galaxy to align with x-axis. Creates a 2D dummy image of the galaxy and uses PCA to find the principal axis.
+
+    Parameters
+    ----------
+
+    galaxy : np.ndarray
+        Galaxy to be rotated.
+    resolution : int, optional, default: 100
+        Resolution of the dummy image.
+    quant : float, optional, default: 0.75
+        Quantile of the dummy image to be used for PCA.
+    
+    Returns
+    -------
+
+    galaxy_rot : np.ndarray
+        Rotated galaxy.
+    """
     image = np.histogram2d(galaxy[:,0], galaxy[:,1], bins=resolution)[0]
     fit = PCA(n_components=2).fit(np.argwhere(image>=np.quantile(image, quant)))
     angle = np.arctan2(*fit.components_[1])
@@ -80,6 +99,64 @@ class Processor():
 
 
 class Processor_cond():
+    """
+    Processor for conditional model. Made to complete several tidious tasks along the workflow of training and evaluating a conditional normalizing flow.
+    Use: Initialize a Processor_cond object with the desired parameters. Then use it's methods for the desired task.
+    In this workflow it is assumed, that the data will usually be a list of glaxy data arrays, of shape (N, 11), where N is the number of stars in the galaxy.
+
+    The workflow, intended is as follows:
+    1. Read the data from the data folder with get_data.
+    2. Clean the data with constrain_data.
+    3. Prepare the data for training the flow with dist_stack and Data_to_flow.
+    4. Train the flow.
+    5. Sample the conditional flow with sample_conditional.
+    6. Convert the sample to physical interpretation with sample_to_Data.
+
+    The processor stores properites like mean and standard deviation of the data, or which components are learnt in log.
+    This allows easily to e.g. transform a sample from the flow back to the physical interpretation.
+
+    Parameters
+    ----------
+
+    percentile1 : float, optional, default: 95
+        Percentile of the data to be used for the first percentile cut in radial distance.
+    percentile2 : float, optional, default: 99
+        Percentile of the data to be used for the second percentile cut in radial distance.
+    feh_min : float, optional, default: -1.5
+        Minimum [Fe/H] to be used in the data. Values below this will be excluded.
+    ofe_min : float, optional, default: -5
+        Minimum [O/Fe] to be used in the data. Values below this will be excluded.
+    N_min : int, optional, default: 0
+        Minimum number of stars to be used in the data. Galaxies with less stars will be excluded.
+    
+    Methods
+    -------
+
+    get_data(folder):
+        Reads the data from the data folder and returns the data as a list of arrays, each containing the data of one galaxy.
+    galaxy_split(Data, N_stars):
+        Splits the array containing all glaxyy data into a list of arrays, each containing the data of one galaxy, the physical interpretation.
+    dist_stack(Data):
+        Stacks a list of arrays of glaxy data into a single array, the statistical interpretation. Can be understood as the inverse of galaxy_split.
+    constrain_data(Data, M_dm_old, info):
+        Does the data cleaning, based on the parameters given in the initialization.
+    Data_to_flow(Data_c, log_learn):
+        Prepares the data for training the flow. Uses statistical interpretation.
+    sample_to_Data(raw):
+        Converts a sample from the flow back to the physical interpretation.
+    sample_Conditional(model, cond_indices, Condition, device split_size):
+        Samples the conditional flow.
+
+    Atributes
+    ---------
+
+    mu : torch.tensor
+        Columnwise mean of the data in statistical interpretation.
+    std : torch.tensor
+        Columnwise standard deviation of the data in statistical interpretation.
+    log_learn : array of bools
+        Array of bools, indicating which components are learnt in log.
+    """
     def __init__(self, percentile1=95, percentile2=99, feh_min=-1.5, ofe_min=-5, N_min=0):
         self.percentile1 = percentile1
         self.percentile2 = percentile2
@@ -93,6 +170,29 @@ class Processor_cond():
     #Only data reading, and calculating N_stars, M_DM, M_stars_tot and M_tot, wich is already
     #included in the data.
     def get_data(self, folder):
+        """
+        Reads the data from the data folder and returns the data as a list of arrays, each containing the data of one galaxy.
+        Reads 11 components: x, y, z, vx, vy, vz, metallicity, [Fe/H], [O/Fe], mass, age for each star and the galaxy's dark matter mass from the file name.
+        The final data arrays have 12 components where the last one is the total mass of the galaxy, including dark matter.
+
+        Parameters
+        ----------
+
+        folder : str
+            Path to the folder containing the data. Assumes a folder containing .npy files, each containing the data of one galaxy.
+        
+        Returns
+        -------
+
+        Data : list of arrays
+            List of arrays, each containing the data of one galaxy.
+        N_stars : array
+            Array containing the number of stars in each galaxy.
+        M_stars_s : array
+            Array containing the stellar mass of each galaxy.
+        M_dm : array
+            Array containing the dark matter mass of each galaxy.
+        """
         files = glob.glob(f"{folder}/*.npy")
 
         N_stars = np.array([np.load(name, mmap_mode="r").shape[1] for name in files])
@@ -122,16 +222,67 @@ class Processor_cond():
 
     #Work with Galaxy data and stack to distribution interpretation with diststack
     def galaxysplit(self, Data, N_stars):
+        """
+        Splits the array containing all glaxyy data into a list of arrays, each containing the data of one galaxy, the physical interpretation.
+        """
         return np.split(Data,np.append(np.array([0]),np.cumsum(N_stars)))[1:-1]
 
 
     #Transform to 1 big array (interpretation as individual distribution points/samples) to feed flow
     def diststack(self, Data):
+        """
+        Stacks a list of arrays of glaxy data into a single array, the statistical interpretation. Can be understood as the inverse of galaxy_split.
+        """
         return np.vstack(Data)
 
 
     #Data cleaning
     def constraindata(self, Data, M_dm_old, info=True):
+        """
+        Does the data cleaning, based on the parameters given in the initialization.
+        Constraints stars to be used on their metallicity and distance from the center of the galaxy.
+
+        New constrains to strars can easily be added in the format:
+        is_valid = is_valid & <condition>
+
+        The galaxies number of stars, the stellar mass of the galaxy as well as it's total mass (in the data array) are automatically updated.
+
+        Also the total number of stars in the galaxy can be constrained, such that galaxies with less stars are excluded.
+
+        Also again, the arrays containing the number of stars, the stellar masses and the dark matter masses are updated, so that there is one entry for each galaxy remaining.
+
+        Parameters
+        ----------
+        Data : list of arrays
+            List of arrays, each containing the data of one galaxy.
+        M_dm_old : array
+            Array containing the dark matter mass of each galaxy, before the data cleaning.
+        info : bool (optional) , default: True
+            If True prints number of stars removed by cleaning and the number of galaxies removed by cleaning.
+        
+        Returns
+        -------
+
+        Data_out : list of arrays
+            List of arrays, each containing the data of one galaxy, after the data cleaning.
+        N_stars : array
+            Updated array containing the number of stars in each galaxy.
+        M_stars : array
+            Updated array containing the stellar mass of each galaxy.
+        M_dm_new : array
+            Updated array containing the dark matter mass of each galaxy.
+
+        Note
+        ----
+
+        The distance is constrained in the following way:
+        The percentile1-th percentile of the stars distances is taken as the maximum distance but if this is larger than R_MAX_MAX, the maximum distance is set to R_MAX_MAX.
+        R_MAX_MAX is the maximum distance of the largest galaxy in the sample expected.
+        This is due to some galaxies having a large number of stars in a structure outside the main galaxy, which would lead to a too large maximum distance.
+        Now if this fixed constraint was applied, there may still be outliers of the galaxies as the percentile only removd the stars from the outside structure.
+        To remove these outliers, the percentile2-th percentile of the stars distances is taken as the maximum distance, for those galaxies.
+
+        """
         Data_out = []
         N_stars = []
         M_stars = []
@@ -197,6 +348,24 @@ class Processor_cond():
 
 
     def Data_to_flow(self, Data_c, log_learn=np.array([])):
+        """
+        Converts the data to a format that can be used for training the flow.
+        Namely the data is transformed to a torch tensor, the components to learn in log are transformed to log and the data is normalized such that it has mean 0 and std 1.
+
+        Parameters
+        ----------
+
+        Data_c : array
+            Array of (constrained) data, to be transformed to a format that can be used for training the flow.
+        log_learn : array (optional), default: np.array([])
+            Array containing the indices of the components to learn in log. If empty, no components are learned in log.
+
+        Returns
+        -------
+
+        Data_p : torch tensor
+            Tensor of the transformed data.
+        """
         Data_p = torch.from_numpy(np.copy(Data_c)).type(torch.float)
 
         #Components to learn in log
@@ -213,11 +382,51 @@ class Processor_cond():
 
 
     def sample_to_Data(self, raw):
+        """
+        Converts a flow sample back to the physical data.
+        Can be understood as the inverse of Data_to_flow, see there for more details.
+
+        Parameters
+        ----------
+
+        raw : torch tensor
+            Tensor of the flow sample.
+        
+        Returns
+        -------
+
+        Data : array
+            Array of the physical data.
+        """
         Data = raw*self.std+self.mu
         Data[:,self.log_learn] = 10**(Data[:,self.log_learn])
         return Data.numpy()
 
     def sample_Conditional(self, model, cond_indices, Condition, device="cuda", split_size=300000):
+        """
+        Samples the conditional flow using a given condition. The condition is transformed to the format used for training the flow and then the flow is sampled.
+        The sampling is done on the GPU in batches of split_size, because the GPU memory is limited.
+
+        Parameters
+        ----------
+
+        model : flowcode.NSFLow object
+            The flow model to sample from.
+        cond_indices : array
+            Array containing the indices of the components of the condition.
+        Condition : array
+            Array containing the condition.
+        device : string (optional), default: "cuda"
+            The device the model is on and the sampling is done on.
+        split_size : int (optional), default: 300000
+            The size of the batches the sampling is done in.
+        
+        Returns
+        -------
+
+        sample : array
+            Array containing the sample of the flow for the given condition.
+        """
         #Format: Contition is (N,n_cond) array cond_indices has length n_cond
         Cond_flow = torch.from_numpy(np.copy(Condition)).type(torch.float)
         

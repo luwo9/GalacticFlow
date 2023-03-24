@@ -5,6 +5,7 @@
 /plots
 /zzz
 /saves
+/cond_trainer
 developtest.ipynb
 developVis.ipynb
 developVis2.ipynb
@@ -18,3 +19,7 @@ test.py
 test1.ipynb
 testtest.ipynb
 To_do
+sklearn.ipynb
+nohup.out
+MAFTEST.ipynb
+status_output_training.txt

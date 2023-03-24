@@ -400,7 +400,7 @@ class NSFlow(nn.Module):
 
 
 
-def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, gamma=0.998, print_fn=None, **print_fn_kwargs):
+def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, gamma=0.998, give_textfile_info=False, print_fn=None, **print_fn_kwargs):
     #Infos to printout
     
     n_steps = data.shape[0]*epochs//batch_size+1
@@ -444,7 +444,11 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
             optimizer.step()
             
             if ct % 100 == 0:
-                print(f"Step {ct} of {n_steps}, Loss:{np.mean(losses[-50:])}, lr={lr_schedule.get_last_lr()[0]}")
+                if give_textfile_info:
+                    with open("status_output_training.txt", mode="a") as f:
+                        f.write(f"Step {ct} of {n_steps}, Loss:{np.mean(losses[-50:])}, lr={lr_schedule.get_last_lr()[0]}\n")
+                else:
+                    print(f"Step {ct} of {n_steps}, Loss:{np.mean(losses[-50:])}, lr={lr_schedule.get_last_lr()[0]}")
                 if loss_saver is not None:
                     loss_saver.append(np.mean(losses[-50:]))
             

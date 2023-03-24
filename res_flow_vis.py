@@ -8,7 +8,58 @@ import matplotlib.pyplot as plt
 standard_zoomout = 1.2
 comp_names = "xyz"
 
+
+def residual_combined(C):
+    """
+    Function calculating the residuals for use a binned statistic plot.
+    Reiduals are defined as the difference between the mean of the data and the mean of the flow, divided by the mean of the data.
+    Assumes complex input. If the imaginary part is 0, it is assumed to be data, otherwise it is assumed to be flow.
+
+    Parameters
+    ----------
+
+    C : np.ndarray, dtype=complex
+        The data and flow samples for each bin to calculate the residuals for. Shape (N,)
+
+    Returns
+    -------
+
+    residual : float
+        The residual for the bin, to be used in the plot.
+    """
+    C_ = np.array(C)
+    is_data = np.imag(C_) == 0
+    C_data = np.real(C_[is_data])
+    C_flow = np.real(C_[~is_data])
+    if len(C_data)==0 or len(C_flow)==0:
+        return np.nan
+    mean_data = np.mean(C_data)
+    mean_flow = np.mean(C_flow)
+    return (mean_data-mean_flow)/mean_data
+
+
 def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
+    """
+    Plot the results of the flow for a single galaxy. Makes 4 plots:
+    1. Corner plot of the data and the flow in the x,y,z plane
+    2. Binned hexagonal plot in the x,y plane for  average [Fe/H], [O/Fe] and age, plots data. flow and residuals.
+    3. Histograms for every component, comparing data and flow
+    4. Corner plot of all components, comparing data and flow
+
+    Parameters
+    ----------
+
+    data_true_ : np.ndarray
+        The (true) galaxy data, shape (N, 10)
+    data_flow_ : np.ndarray
+        The flow sample for the galaxy, shape (N, 10)
+    label : str, optional, default: ""
+        Label to add to the plot titles, when saving
+    format_ : str, optional, default: "png"
+        Format to save the plots in
+    dpi : int, optional, default: 300
+        DPI resolution to save the plots in    
+    """
     
     data_true = data_true_.T
     data_flow = data_flow_.T
@@ -69,7 +120,7 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     plt.show()
     
     #2D Hists
-    fig3, axs3 = plt.subplots(2,3, figsize=(18,12), sharex="all", sharey="all", layout="compressed")
+    fig3, axs3 = plt.subplots(3,3, figsize=(18,12), sharex="all", sharey="all", layout="compressed")
 
     lim_max = 10**-6
     vmins = []
@@ -82,7 +133,7 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
         vmaxs.append(im2.get_array().data.max())
 
         ticks_cb = np.array([1, 2, 4, 6, 8, 10, 12]) if i == 2 else None
-        cbar3 = fig3.colorbar(im2, ax=axs3[:,i], pad=0.03, aspect=33, location="bottom", shrink=0.95, ticks=ticks_cb)
+        cbar3 = fig3.colorbar(im2, ax=axs3[:2,i], pad=0.03, aspect=33, location="bottom", shrink=0.95, ticks=ticks_cb)
         if i == 2:
             cbar3.ax.set_xticklabels(ticks_cb)
             cbar3.ax.minorticks_off()
@@ -97,6 +148,17 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
         bins = "log" if i == 2 else None
         ax.hexbin(data_flow[0,include], data_flow[1,include], C=flow[include], gridsize=int(150*standard_zoomout), cmap="coolwarm", vmin=vmin, vmax=vmax, bins=bins)
         ax.set_title(f"Flow sample {name}")
+
+    for i, (ax, true, flow, name) in enumerate(zip(axs3[2], data_true[7:], data_flow[7:], names[-3:])):
+        name = f"<{name}>"
+        include = (data_flow[0]<=lim_max)&(data_flow[1]<=lim_max)
+        C_combined = np.hstack((true, flow[include]+1j))
+        x_combined = np.hstack((data_true[0], data_flow[0,include]))
+        y_combined = np.hstack((data_true[1], data_flow[1,include]))
+        im2b = ax.hexbin(x_combined, y_combined, C=C_combined, gridsize=int(150*standard_zoomout), cmap="bwr", vmin = -2, vmax = 2, reduce_C_function=residual_combined)
+
+        fig3.colorbar(im2b, ax=ax, pad=0.03, aspect=33, location="bottom", shrink=0.95)
+        ax.set_title(f"Residual plot of {name}")
 
     for ax in axs3.ravel():
         ax.set_box_aspect(1)
@@ -138,6 +200,21 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
 
 
 def loss_plot(losses, tot_time=None, savefig=None, format="png"):
+    """
+    Plot the loss curve, of the training.
+
+    Parameters
+    ----------
+
+    losses : list
+        List of losses, to be plotted.
+    tot_time : float, optional, default: None
+        Total time of the training in minutes. If None, the x-axis will be in steps, otherwise in minutes.
+    savefig : str, optional, default: None
+        If not None, the plot will be saved with this in the name.
+    format : str, optional, default: "png"
+        Format of the saved plot.
+    """
     y_axis = np.array(losses)
     x_axis = np.arange(y_axis.shape[0])/1
     if tot_time:
@@ -156,6 +233,27 @@ def loss_plot(losses, tot_time=None, savefig=None, format="png"):
 
 
 def sortgalaxies(Galaxies, Masses):
+    """
+    Sort galaxies by their mass.
+
+    Parameters
+    ----------
+
+    Galaxies : list of numpy arrays
+        List of galaxies to be sorted.
+    Masses : np.ndarray
+        Array of masses of the galaxies. Must be the same length as Galaxies.
+        Note that technically Masses could be any other quantity to sort by.
+
+    Returns
+    -------
+
+    Galaxies : list of numpy arrays
+        List of galaxies sorted by their mass.
+    Masses : np.ndarray
+        Array of masses of the galaxies, sorted.
+
+    """
     order = np.argsort(Masses)
     return [Galaxies[i] for i in order], Masses[order]
 
@@ -168,7 +266,9 @@ def xylim(Galaxies, xylim_array, comps=(0,1)):
         Galaxies_out.append(galaxy)
     return Galaxies_out
 
+#How many galaxies to plot per page in the plot_conditional function, if a page is plotted. ormat: (n_rows, n_columns)
 page_plot_layout = (10, 7) #(8, 6)
+#How many galaxyies to plot per row in the plot_conditional function, if all galaxies are plotted.
 n_row_all = 4
 
 def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", v_pre=None, lim_pre=None):
@@ -203,6 +303,20 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
         the used scale for reuse as pre-set values in another plot for better comparison.
     v_pre: None or (float, float), default: None
         Preset minimum and maximum value for scaling color. Applies to all plots. `None` means to calculate the scaling values from the data. See ``color``.
+    lim_pre: None or np.ndarray, default: None
+        Gives the limits for the x and y axis for each galaxy. Shape: (len(Galaxies), 4), where the 4 values for each galaxy are x_min, x_max, y_min, y_max.
+        If `None`, the limits are calculated from the data.
+        Presets not only the x, y limits of the plot, but also the limits of the data used for the plot. This is to avoid large differences in the gridsize used for the plot.
+
+    Returns
+    -------
+
+    v_pre: None or (float, float)
+        If ``color`` is "global" and ``v_pre`` is `None`, the used scaling values are returned for reuse as pre-set values in another plot for better comparison.
+        For input as ``v_pre``.
+    lim_pre_new: None or np.ndarray
+        If ``lim_pre`` is `None`, the used limits are returned for reuse as pre-set values in another plot for better comparison.
+        For input as ``lim_pre``.
     """
 
     #Standard colormap
