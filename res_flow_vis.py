@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-#from scipy.stats import binned_statistic_2d as bs2d
+from scipy.stats import binned_statistic_2d
 
 standard_zoomout = 1.2
 comp_names = "xyz"
@@ -381,8 +381,8 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
 
         #Apply preset x/y limits on data
         if lim_pre is not None:
-            include = (lim_pre[i][0]<=galaxy[:,comps[0]]<=lim_pre[i][1])&(lim_pre[i][2]<=galaxy[:,comps[1]]<=lim_pre[i][3])
-            gridsize = int(gridsize*standard_zoomout)
+            include = (lim_pre[i][0]<=galaxy[:,comps[0]])&(galaxy[:,comps[0]]<=lim_pre[i][1])&(lim_pre[i][2]<=galaxy[:,comps[1]])&(galaxy[:,comps[1]]<=lim_pre[i][3])
+            gridsize = int(gridsize*standard_zoomout/standard_zoomout)
         else:
             include = np.full(galaxy.shape[0], True)
         ic = include
@@ -397,7 +397,7 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
 
         im = ax.hexbin(galaxy[ic,comps[0]], galaxy[ic,comps[1]], C=statistic, bins=bins, gridsize=gridsize, cmap=cmap, rasterized=True, vmin=vmin, vmax=vmax)
         
-        ax.set_title(f"M = {mass:.2e}", fontsize=5, pad=1)
+        ax.set_title(f"M = {mass:.2e}M$_\odot$", fontsize=5, pad=1)
         ax.set_xlabel(comp_names[comps[0]], fontsize=5, labelpad=0.2)
         ax.set_ylabel(comp_names[comps[1]], fontsize=5, labelpad=0.1)
 
@@ -423,13 +423,13 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
             lim_pre_new[i] = np.array([*x_lim_new,*y_lim_new])
         else:
             x_lim_new = tuple(lim_pre[i][:2])
-            x_lim_new = tuple(lim_pre[i][-2:])
+            y_lim_new = tuple(lim_pre[i][-2:])
         
         ax.set_xlim(x_lim_new)
         ax.set_ylim(y_lim_new)
 
     #Whole figure title + colorbar
-    fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")} in dependency of M')
+    fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "<N>")} in dependency of total mass M')
     if color == "global":
         plt.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
 
@@ -449,3 +449,217 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
         return vmin, vmax, lim_pre_new
     elif color == "global" and v_pre == None:
         return vmin, vmax
+    
+
+
+#Plot histograms for conditional data
+#Histogram for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram.
+#Coloring is done by sampling from a colormap in log, and the colorbar is placed at the bottom of the figure.
+
+def plot_conditional_histograms(Galaxies, Massses, label, bins=100, cmap="magma", log=False):
+    colormap = matplotlib.colormaps[cmap]
+    c_norm = matplotlib.colors.LogNorm(vmin=Massses.min(), vmax=Massses.max())
+    scalar_map = matplotlib.cm.ScalarMappable(norm=c_norm, cmap=colormap)
+
+    plottables = ["r/kpc", "z/kpc", "|v|/km/s", "Z", "[Fe/H]", "[O/Fe]", "age/Gyr"]
+
+    fig, axs = plt.subplots(3,3, figsize=(9,21), layout="constrained")
+    axs = axs.ravel()
+
+    for galaxy, mass in zip(Galaxies, Massses):
+        for i, (ax, name) in enumerate(axs, plottables):
+            if i==0:
+                #Get cylindrical radius
+                plot = np.sqrt(np.sum(galaxy[:,:2]**2, axis=1))
+            elif i==1:
+                #Get z
+                plot = galaxy[:,2]
+            elif i==2:
+                #Get absolute velocity
+                plot = np.sqrt(np.sum(galaxy[:,3:6]**2, axis=1))
+            elif i>=3:
+                ind_plot = i+3
+                plot = galaxy[:,ind_plot]
+            
+            ax.hist(plot, bins=bins, color=scalar_map.to_rgba(mass), density=True, histtype="step", log=log)
+            ax.set_xlabel(name)
+            ax.set_ylabel("Density")
+            
+    fig.suptitle("Histograms of the properties of the galaxies, colored by mass")
+    plt.colorbar(scalar_map, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
+    plt.savefig(f"plots/Cond_histograms_{label}.pdf", dpi=300, format="pdf")
+    plt.show()
+
+
+#Rewrite plot_conditional to use scipy binned_statistic_2d and plt.imshow
+
+def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", color_pass="local", grid_pass=1, N_density=True):
+    #Standard colormap
+    if cmap == None:
+        cmap = "magma" if type == "N" else "coolwarm"
+
+    #Sclaing log/lin
+    if scale is None:
+        scale = "log" if type == "N" else "lin"
+
+    #Initialize
+    #Data
+    Galaxies_col_sorted = []
+    Masses_col_sorted = []
+    figsizes = []
+    for Galaxies, Masses in zip(Data_colection[::2], Data_colection[1::2]):
+        Galaxies_sorted, Masses_sorted = sortgalaxies(Galaxies, Masses)
+        if show == "page":
+            N_plot = np.prod(page_plot_layout)
+            N_galaxy = len(Galaxies)
+            N_leavout = N_galaxy-N_plot
+            N_remain = N_galaxy-N_leavout*2
+            plot_galaxy = [True]*(N_remain//2) + [True, False]*(N_leavout) + [True]*(N_remain-N_remain//2)
+            Galaxies_sorted = [Galaxies_sorted[i] for i in np.arange(N_galaxy)[plot_galaxy]]
+            Masses_sorted = Masses_sorted[plot_galaxy]
+            plot_layout = page_plot_layout
+            figsizes.append((8.27, 11.69))
+        else:
+            plot_layout = (-(len(Galaxies)//-n_row_all), n_row_all)
+            figsizes.append((16, 4*plot_layout[0]))
+
+        Galaxies_col_sorted.append(Galaxies_sorted)
+        Masses_col_sorted.append(Masses_sorted)
+
+    #Statistics
+    if type == "N":
+        statistic = "count"
+    elif type == "ofe":
+        statistic = "mean"
+    elif type == "feh":
+        statistic = "mean"
+
+    #Iterate over all datasets of galaxies and calculate all statistics
+    #Then use the results to set scalings (color, grid etc.)
+    #Either use the same scalings for all datasets, or use different scalings for each dataset
+    #Behaviour following the color_pass and grid_pass arguments
+    #color_pass = "local" -> use local color scalings for each dataset
+    #color_pass = "global" -> use global color scalings for all datasets
+    #grind_pass determines how many times the grid is passed over from the first dataset
+
+    Result_col = []
+    vmin_s = []
+    vmax_s = []
+    for i, (Galaxies_sorted, Masses_sorted) in enumerate(zip(Galaxies_col_sorted, Masses_col_sorted)):
+        #Initialize
+        Result = []
+        vmin = np.inf
+        vmax = -np.inf
+        #Iterate over all galaxies
+        for j, (galaxy, mass) in enumerate(zip(Galaxies_sorted, Masses_sorted)):
+            #Get right grid
+            if i==0 or i>grid_pass:
+                #Do individual grid, with quadratic bins
+                sz = standard_zoomout
+                x_bins = np.linspace(galaxy[:,comps[0]].min()*sz, galaxy[:,comps[0]].max()*sz, gridsize)
+                y_bins = np.linspace(galaxy[:,comps[1]].min()*sz, galaxy[:,comps[1]].max()*sz, gridsize)
+            else:
+                #Use grid from first dataset from respective galaxy
+                x_bins = Result_col[0][j][1]
+                y_bins = Result_col[0][j][2]
+
+
+            #Calculate statistics
+            if type == "N":
+                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,0], statistic="count", bins=(x_bins, y_bins))
+            elif type == "ofe":
+                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,8], statistic="mean", bins=(x_bins, y_bins))
+            elif type == "feh":
+                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,7], statistic="mean", bins=(x_bins, y_bins))
+
+            vmin = min(vmin, result[0].min())
+            vmax = max(vmax, result[0].max())
+
+            Result.append(result)
+        Result_col.append(Result)
+
+        #Set scalings for color
+        if color_pass == "local":
+            #Use individual scaling for each dataset
+            vmin_s.append(vmin)
+            vmax_s.append(vmax)
+        elif color_pass == "global":
+            #Use global scaling for all datasets
+            vmin_s.append(min(min(vmin_s), vmin))
+            vmax_s.append(max(max(vmax_s), vmax))
+
+    #Plot
+    for i, (Galaxies_sorted, Masses_sorted, Result, figsize, vmin, vmax) in enumerate(zip(Galaxies_col_sorted, Masses_col_sorted, Result_col, figsizes, vmin_s, vmax_s)):
+        fig, axs = plt.subplots(*plot_layout, figsize=figsize, layout="constrained")
+        axs = axs.ravel()
+        for ax, galaxy, mass, result in zip(axs, Galaxies_sorted, Masses_sorted, Result):
+
+            #Respect scaling log/lin
+            statistic = result[0]
+            if type == "N" and N_density:
+                #Get area of bins in units pc^2
+                area = (result[1][1]-result[1][0])*(result[2][1]-result[2][0])*1e6
+                #Scale statistic to be per pc^2
+                statistic = statistic/area
+
+            if color == "individual":
+                #Use individual color scaling for each galaxy
+                vmin = statistic.min()
+                vmax = statistic.max()
+
+            vmin = 1 if vmin == 0 else vmin
+
+            if scale == "log":
+                #Logarithmic scaling
+                norm = matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax)
+            elif scale == "lin":
+                #Linear scaling
+                norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+
+            #Plot
+            im = ax.imshow(statistic.T, origin="lower", extent=[result[1].min(), result[1].max(), result[2].min(), result[2].max()], cmap=cmap, norm=norm)
+
+            #Set labels
+            ax.set_title(f"M = {mass:.2e}M$_\odot$", fontsize=5, pad=1)
+            ax.set_xlabel(comp_names[comps[0]], fontsize=5, labelpad=0.2)
+            ax.set_ylabel(comp_names[comps[1]], fontsize=5, labelpad=0.1)
+
+            #Facecolor
+            if type=="N":
+                ax.set_facecolor(matplotlib.colormaps[cmap](0))
+
+            #No ticks
+            #ax.set_xticks([])
+            #ax.set_yticks([])
+
+            #Small, fitting ticks
+            ax.tick_params(axis="both", labelsize=5, length=2.5, pad=0.5)
+
+            ax.set_aspect("equal")
+            ax.set_box_aspect(1)
+
+        #Colorbar, suptitle
+        #Whole figure title + colorbar
+        fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "N")} in dependency of total mass M')
+        if color == "global":
+            fig.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
+
+        #Delete axis left over
+        n_not_used = len(Galaxies_sorted)-plot_layout[0]*plot_layout[1]
+        if n_not_used<0:
+            for not_used in axs[n_not_used:]:
+                fig.delaxes(not_used)
+
+        #Save and show
+        format = "pdf" if show == "page" else "png"
+        fig.savefig(f"plots/Plot_conditional_{label}_{i}.{format}", dpi=300, format=format)
+        fig.show()
+
+            
+            
+
+
+    
+    
+
+
