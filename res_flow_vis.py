@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from scipy.stats import binned_statistic_2d
+import itertools
 
 standard_zoomout = 1.2
 comp_names = "xyz"
@@ -38,7 +39,7 @@ def residual_combined(C):
     return (mean_data-mean_flow)/mean_data
 
 
-def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
+def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=300, color_pass="local", N_density=False):
     """
     Plot the results of the flow for a single galaxy. Makes 4 plots:
     1. Corner plot of the data and the flow in the x,y,z plane
@@ -58,11 +59,19 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     format_ : str, optional, default: "png"
         Format to save the plots in
     dpi : int, optional, default: 300
-        DPI resolution to save the plots in    
+        DPI resolution to save the plots in
+    color_pass : str, optional, default: "local"
+        Determines color scaling: "local" means that the color scale is set by and applied to the data and simply applied to flow,
+        "global" means that the color scale is set by the data and flow and applied to both.
+    N_density : bool, optional, default: False
+        If True, the plots are normalized to bin area, giving a density plot instead of a count plot.
     """
     
     data_true = data_true_.T
-    data_flow = data_flow_.T
+    if data_flow_ is None:
+        data_flow = None
+    else:
+        data_flow = data_flow_.T
     names = ['x', 'y', 'z', 'vx', 'vy', 'vz', 'metals', '[Fe/H]', '[O/Fe]', 'age/Gyr']
     
     
@@ -70,114 +79,188 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     ind_array = np.array([[0,1],[0,2],[1,2]])
     ax_ind_array = np.array([[0,0],[1,0],[1,1]])
 
-    vmax = -100
-    vmin = 1
-    for ind1, ind2 in ind_array:
-        res = plt.hexbin(data_true[ind1], data_true[ind2], gridsize=150, cmap="magma", bins="log")
-        plt.close()
-        bin_results = res.get_array().data
-        vmax = np.maximum(bin_results.max(), vmax)
-        #vmin = np.minimum(bin_results.min(), vmin)
+    results_data = []
+    results_flow = []
+    vmin = np.inf
+    vmax = -np.inf
+    lims = []
+    for (ind1, ind2) in ind_array:
+        #Get grid
+        sz = standard_zoomout
+        max_comps = np.max(np.abs(data_true[[ind1, ind2]]))*sz
+        lims.append(max_comps)
+        x_bins = np.linspace(-max_comps, max_comps, 150)
+        y_bins = np.linspace(-max_comps, max_comps, 150)
 
+        #Do computation
+        result_data = binned_statistic_2d(data_true[ind1], data_true[ind2], data_true[ind1], statistic="count", bins=(x_bins, y_bins))
+        results_data.append(result_data)
 
+        if data_flow is not None:
+            result_flow = binned_statistic_2d(data_flow[ind1], data_flow[ind2], data_flow[ind1], statistic="count", bins=(result_data[1], result_data[2]))
+            results_flow.append(result_flow)
 
-    fig1, axs1 = plt.subplots(2,4, sharex = "all", sharey = "all", figsize=(16,8), layout="compressed")
-    #Data first
-    lim_max = 10**-6
-    for (ind1, ind2), (ax_ind1, ax_ind2) in zip(ind_array, ax_ind_array):
-        ax = axs1[ax_ind1][ax_ind2]
-        im1 = ax.hexbin(data_true[ind1], data_true[ind2], gridsize=150, cmap="magma", bins="log", vmin=vmin, vmax=vmax)
-        ax.set_xlabel(comp_names[ind1] if ax_ind1 == 1 else "")
-        ax.set_ylabel(comp_names[ind2] if ax_ind2 == 0 else "")
-        ax.text(0.02, 0.98, "Data", ha="left", va="top", transform=ax.transAxes, color="white")
-        lim_max = np.maximum(np.max(np.abs(ax.get_xlim()+ax.get_ylim())), lim_max)
+        if N_density:
+            area = (result_data[1][1]-result_data[1][0])*(result_data[2][1]-result_data[2][0])
+            result_data[0] = result_data[0]/area
+            if data_flow is not None:
+                result_flow[0] = result_flow[0]/area
+
+        
+        vmin = np.minimum(vmin, result_data.statistic.min())
+        vmax = np.maximum(vmax, result_data.statistic.max())
+        if data_flow is not None and color_pass=="global":
+            vmin = np.minimum(vmin, result_flow.statistic.min())
+            vmax = np.maximum(vmax, result_flow.statistic.max())
+
+        vmin = np.maximum(vmin, 1)
+    #Ploting
+    #Get right axes depending on if data_flow is given or not
+    if data_flow is None:
+        fig1, axs1 = plt.subplots(2,2, sharex = "all", sharey = "all", figsize=(8,8), layout="compressed")
+    else:
+        fig1, axs1 = plt.subplots(2,4, sharex = "all", sharey = "all", figsize=(16,8), layout="compressed")
     
-    lim_max *= standard_zoomout
+    for result_data, result_flow, (ax_ind1, ax_ind2), (ind1, ind2), lim in itertools.zip_longest(results_data, results_flow, ax_ind_array, ind_array, lims):
 
-    ax_ind_array[:,1] += 2
-    for (ind1, ind2), (ax_ind1, ax_ind2) in zip(ind_array, ax_ind_array):
-        include = (data_flow[ind1]<=lim_max)&(data_flow[ind2]<=lim_max)
+        #First, plot the data
         ax = axs1[ax_ind1][ax_ind2]
-        im1 = ax.hexbin(data_flow[ind1,include], data_flow[ind2,include], gridsize=int(150*standard_zoomout), cmap="magma", bins="log", vmin=vmin, vmax=vmax)
+        statistic = result_data[0]
+        
+
+        norm = matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax)
+
+        im1 = ax.imshow(statistic.T, origin="lower", extent=[result_data[1][0], result_data[1][-1], result_data[2][0], result_data[2][-1]], cmap="magma", norm=norm)
         ax.set_xlabel(comp_names[ind1] if ax_ind1 == 1 else "")
         ax.set_ylabel(comp_names[ind2] if ax_ind2 == 0 else "")
-        ax.text(0.02, 0.98, "Flow", ha="left", va="top", transform=ax.transAxes, color="white")
-
-
-    for ax in axs1.ravel():
-        ax.set_xlim(-lim_max,lim_max)
-        ax.set_ylim(-lim_max,lim_max)
-        ax.set_box_aspect(1)
         ax.set_facecolor(matplotlib.colormaps["magma"](0))
+        ax.set_xlim(-lim,lim)
+        ax.set_ylim(-lim,lim)
+        ax.set_box_aspect(1)
 
-    fig1.suptitle("<N> corner plot. Left: data, right: sample")
-    plt.colorbar(im1, ax=axs1, pad=0.03, aspect=33, shrink=1)
+        if data_flow is not None:
+            ax.text(0.02, 0.98, "Data", ha="left", va="top", transform=ax.transAxes, color="white")
+            #Now plot flow results, if given
+            ax = axs1[ax_ind1][ax_ind2+2]
+            statistic = result_flow[0]
+
+            
+            im1 = ax.imshow(statistic.T, origin="lower", extent=[result_flow[1][0], result_flow[1][-1], result_flow[2][0], result_flow[2][-1]], cmap="magma", norm=norm)
+            ax.set_xlabel(comp_names[ind1] if ax_ind1 == 1 else "")
+            ax.set_ylabel(comp_names[ind2] if ax_ind2 == 0 else "")
+            ax.text(0.02, 0.98, "Flow", ha="left", va="top", transform=ax.transAxes, color="white")
+            ax.set_facecolor(matplotlib.colormaps["magma"](0))
+            ax.set_xlim(-lim,lim)
+            ax.set_ylim(-lim,lim)
+            ax.set_box_aspect(1)
+    
+    #Add colorbar and subtitle
+    fig1.suptitle("<N> corner plot. Left: data, right: sample" if data_flow is not None else "<N> corner plot of the data")
+    fig1.colorbar(im1, ax=axs1, pad=0.03, aspect=33, shrink=1, label="N" if not N_density else "N/pc$^2$")
 
     plt.delaxes(axs1[0][1])
-    plt.delaxes(axs1[0][3])
-    
+    if data_flow is not None:
+        plt.delaxes(axs1[0][3])
+
     plt.savefig(f"plots/Plot1{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
-    
-    #2D Hists
-    fig3, axs3 = plt.subplots(3,3, figsize=(18,12), sharex="all", sharey="all", layout="compressed")
 
-    lim_max = 10**-6
-    vmins = []
-    vmaxs = []
-    for i, (ax, true, name) in enumerate(zip(axs3[0], data_true[7:], names[-3:])):
+    #Mosaic plots
+    if data_flow is None:
+        fig3, axs3 = plt.subplots(1,3, figsize=(18,4), sharex="all", sharey="all", layout="compressed")
+    else:
+        fig3, axs3 = plt.subplots(3,3, figsize=(18,12), sharex="all", sharey="all", layout="compressed")
+
+    fixed_grid = False
+    data_flow_dummy = data_true if data_flow is None else data_flow
+    for i,(col, true, flow, name) in enumerate(zip(axs3.T, data_true[7:], data_flow_dummy[7:], names[-3:])):
+        vmin = np.inf
+        vmax = -np.inf
+        #Data
         name = f"<{name}>"
-        bins = "log" if i == 2 else None
-        im2 = ax.hexbin(data_true[0], data_true[1], C=true, gridsize=150, cmap="coolwarm", bins=bins)
-        vmins.append(im2.get_array().data.min())
-        vmaxs.append(im2.get_array().data.max())
+        
+        if not fixed_grid:
+            sz = standard_zoomout
+            max_comps = np.max(np.abs(data_true[:2]))*sz
+            x_bins = np.linspace(-max_comps, max_comps, 150)
+            y_bins = np.linspace(-max_comps, max_comps, 150)
+        
+        #Do the computation
+        result_data = binned_statistic_2d(data_true[0], data_true[1], true, statistic="mean", bins=(x_bins, y_bins))
 
-        ticks_cb = np.array([1, 2, 4, 6, 8, 10, 12]) if i == 2 else None
-        cbar3 = fig3.colorbar(im2, ax=axs3[:2,i], pad=0.03, aspect=33, location="bottom", shrink=0.95, ticks=ticks_cb)
-        if i == 2:
-            cbar3.ax.set_xticklabels(ticks_cb)
-            cbar3.ax.minorticks_off()
+        if not fixed_grid:
+            x_bins = result_data[1]
+            y_bins = result_data[2]
+            fixed_grid = True
+
+        #Filter out the nans
+        not_nan = ~np.isnan(result_data[0])
+        vmin = np.minimum(vmin, result_data[0][not_nan].min())
+        vmax = np.maximum(vmax, result_data[0][not_nan].max())
+
+        #If given, do the same for flow
+        if data_flow is not None:
+            result_flow = binned_statistic_2d(data_flow[0], data_flow[1], flow, statistic="mean", bins=(x_bins, y_bins))
+            if color_pass == "global":
+                #Filter out the nans
+                not_nan = ~np.isnan(result_flow[0])
+                vmin = np.minimum(vmin, result_flow[0][not_nan].min())
+                vmax = np.maximum(vmax, result_flow[0][not_nan].max())
+
+            #And also the residuals
+            x_combined = np.hstack((data_true[0], data_flow[0]))
+            y_combined = np.hstack((data_true[1], data_flow[1]))
+            val_combined = np.hstack((true, flow+1j))
+            result_combined = binned_statistic_2d(x_combined, y_combined, val_combined, statistic=residual_combined, bins=(x_bins, y_bins))
+
+        #Make all the plots
+        #Data
+        ax = col if data_flow is None else col[0]
+        im2 = ax.imshow(result_data[0].T, origin="lower", extent=[x_bins[0], x_bins[-1], y_bins[0], y_bins[-1]], vmin=vmin, vmax=vmax, cmap="coolwarm")
         ax.set_title(f"Data {name}")
-        lim_max = np.maximum(np.max(np.abs(ax.get_xlim()+ax.get_ylim())), lim_max)
+        if i == 0:
+            ax.set_ylabel("y")
+        
+        #Colorbars for flow and data
+        if data_flow is None:
+            fig3.colorbar(im2, ax=ax, pad=0.03, aspect=33, location="bottom", shrink=0.95)
+        else:
+            #Flow
+            ax = col[1]
+            im2 = ax.imshow(result_flow[0].T, origin="lower", extent=[x_bins[0], x_bins[-1], y_bins[0], y_bins[-1]], vmin=vmin, vmax=vmax, cmap="coolwarm")
+            ax.set_title(f"Flow sample {name}")
+            if i == 0:
+                ax.set_ylabel("y")
+            fig3.colorbar(im2, ax=col[:2], pad=0.03, aspect=33, location="bottom", shrink=0.95)
 
-    lim_max *= standard_zoomout
-
-    for i, (ax, flow, name, vmin, vmax) in enumerate(zip(axs3[1], data_flow[7:], names[-3:], vmins, vmaxs)):
-        name = f"<{name}>"
-        include = (data_flow[0]<=lim_max)&(data_flow[1]<=lim_max)
-        bins = "log" if i == 2 else None
-        ax.hexbin(data_flow[0,include], data_flow[1,include], C=flow[include], gridsize=int(150*standard_zoomout), cmap="coolwarm", vmin=vmin, vmax=vmax, bins=bins)
-        ax.set_title(f"Flow sample {name}")
-
-    for i, (ax, true, flow, name) in enumerate(zip(axs3[2], data_true[7:], data_flow[7:], names[-3:])):
-        name = f"<{name}>"
-        include = (data_flow[0]<=lim_max)&(data_flow[1]<=lim_max)
-        C_combined = np.hstack((true, flow[include]+1j))
-        x_combined = np.hstack((data_true[0], data_flow[0,include]))
-        y_combined = np.hstack((data_true[1], data_flow[1,include]))
-        im2b = ax.hexbin(x_combined, y_combined, C=C_combined, gridsize=int(150*standard_zoomout), cmap="bwr", vmin = -2, vmax = 2, reduce_C_function=residual_combined)
-
-        fig3.colorbar(im2b, ax=ax, pad=0.03, aspect=33, location="bottom", shrink=0.95)
-        ax.set_title(f"Residual plot of {name}")
+            #Residuals
+            ax = col[2]
+            im2b = ax.imshow(np.real(result_combined[0]).T, origin="lower", extent=[x_bins[0], x_bins[-1], y_bins[0], y_bins[-1]], vmin=-2, vmax=2, cmap="bwr")
+            ax.set_title(f"Residual plot of {name}")
+            if i == 0:
+                ax.set_ylabel("y")
+            ax.set_xlabel("x")
+            fig3.colorbar(im2b, ax=ax, pad=0.03, aspect=33, location="bottom", shrink=0.95)
 
     for ax in axs3.ravel():
         ax.set_box_aspect(1)
-        ax.set_xlim(-lim_max,lim_max)
-        ax.set_ylim(-lim_max,lim_max)
-
+        ax.set_xlim(-max_comps, max_comps)
+        ax.set_ylim(-max_comps, max_comps)
     
     plt.savefig(f"plots/Plot2{label}.{format_}", format=format_, dpi=dpi)
     plt.show()
-    
+
     #Histograms
-    
     fig2, axs2 = plt.subplots(4,3, figsize=(18,24))
     axs2 = axs2.ravel()
     
     axs2_crop = axs2[10*[True]+2*[False]]
-    for i, (ax, true, flow, name) in enumerate(zip(axs2_crop,data_true,data_flow,names)):
+    if data_flow is None:
+        data_flow_dummy = data_true if data_flow is None else data_flow
+    for i, (ax, true, flow, name) in enumerate(zip(axs2_crop,data_true,data_flow_dummy,names)):
         ax.hist(true, bins=300, histtype="step", density=True)
-        ax.hist(flow, bins=300, histtype="step", density=True)
+        if data_flow is not None:
+            ax.hist(flow, bins=300, histtype="step", density=True)
         ax.set_xlabel(name)
         ax.set_ylabel("count")
     
@@ -188,12 +271,20 @@ def get_result_plots(data_true_, data_flow_, label="", format_="png", dpi=300):
     
     #Cornerplot
     if True:
-        every = data_flow.shape[1]//1000
-        data_corner = np.hstack((data_true[:,::every], data_flow[:,::every]))
-        data_dict = dict(zip(names, data_corner))
-        data_dict["select"] = np.append(np.full(data_true[:,::every].shape[1],"data"),np.full(data_flow[:,::every].shape[1],"model"))
+        if data_flow is not None:
+            every = data_flow.shape[1]//1000
+            every = 1 if every == 0 else every
+            data_corner = np.hstack((data_true[:,::every], data_flow[:,::every]))
+            data_dict = dict(zip(names, data_corner))
+            data_dict["select"] = np.append(np.full(data_true[:,::every].shape[1],"data"),np.full(data_flow[:,::every].shape[1],"model"))
+            hue = "select"
+        else:
+            every = data_true.shape[1]//1000
+            every = 1 if every == 0 else every
+            data_dict = dict(zip(names, data_true[:,::every]))
+            hue = None
         
-        sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue="select", diag_kind="kde", diag_kws ={"common_norm":False})
+        sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue=hue, diag_kind="kde", diag_kws ={"common_norm":False})
         
         plt.savefig(f"plots/Plot4{label}.{format_}", format=format_, dpi=dpi)
         plt.show()
@@ -318,7 +409,7 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
         If ``lim_pre`` is `None`, the used limits are returned for reuse as pre-set values in another plot for better comparison.
         For input as ``lim_pre``.
     """
-
+    print("DeprecationWarning: plot_conditional is deprecated and will be removed in a future version. Use plot_conditional2 instead.")
     #Standard colormap
     if cmap == None:
         cmap = "magma" if type == "N" else "coolwarm"
@@ -456,18 +547,45 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
 #Histogram for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram.
 #Coloring is done by sampling from a colormap in log, and the colorbar is placed at the bottom of the figure.
 
-def plot_conditional_histograms(Galaxies, Massses, label, bins=100, cmap="magma", log=False):
+def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridis", log=False):
+    """
+    Plots histograms for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram, respectivley.
+
+    Parameters
+    ----------
+
+    Galaxies : list of numpy arrays
+        Data of the Galaxies to be plotted.
+    Massses : numpy array
+        Massses containing the mass of each galaxy in the same order as the Galaxies.
+    label : str
+        Label to be used for the file name.
+    bins : int, optional, dfault: 300
+        Number of bins to be used for the histograms.
+    cmap : str, optional, default: "viridis"
+        Colormap to be sampled to color code the masses.
+    log : bool, optional, default: False
+        Wheather to plot the histogram in log scale.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    For age only a sixth of the given bins is used to reduce noise.
+    """
     colormap = matplotlib.colormaps[cmap]
     c_norm = matplotlib.colors.LogNorm(vmin=Massses.min(), vmax=Massses.max())
     scalar_map = matplotlib.cm.ScalarMappable(norm=c_norm, cmap=colormap)
 
     plottables = ["r/kpc", "z/kpc", "|v|/km/s", "Z", "[Fe/H]", "[O/Fe]", "age/Gyr"]
 
-    fig, axs = plt.subplots(3,3, figsize=(9,21), layout="constrained")
+    fig, axs = plt.subplots(2,4, figsize=(16,8), layout="constrained")
     axs = axs.ravel()
 
     for galaxy, mass in zip(Galaxies, Massses):
-        for i, (ax, name) in enumerate(axs, plottables):
+        for i, (ax, name) in enumerate(zip(axs, plottables)):
             if i==0:
                 #Get cylindrical radius
                 plot = np.sqrt(np.sum(galaxy[:,:2]**2, axis=1))
@@ -480,20 +598,68 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=100, cmap="magma"
             elif i>=3:
                 ind_plot = i+3
                 plot = galaxy[:,ind_plot]
+                
             
-            ax.hist(plot, bins=bins, color=scalar_map.to_rgba(mass), density=True, histtype="step", log=log)
+            ax.hist(plot, bins=int(bins/6) if i==6 else bins, color=scalar_map.to_rgba(mass), density=True, histtype="step", log=log)
             ax.set_xlabel(name)
             ax.set_ylabel("Density")
-            
+    for i, ax in enumerate(axs):
+        if i>=len(plottables):
+            fig.delaxes(ax)
     fig.suptitle("Histograms of the properties of the galaxies, colored by mass")
-    plt.colorbar(scalar_map, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
+    cbar = fig.colorbar(scalar_map, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
+    cbar.set_label("M$_\\ast$ /M$_\odot$")
+    #Minor ticks on colorbar
+    cbar.ax.minorticks_on()
+
     plt.savefig(f"plots/Cond_histograms_{label}.pdf", dpi=300, format="pdf")
     plt.show()
 
 
 #Rewrite plot_conditional to use scipy binned_statistic_2d and plt.imshow
 
-def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", color_pass="local", grid_pass=1, N_density=True):
+def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=None, gridsize=100, cmap=None, comps=(0,1), color="global", color_pass="local", grid_pass=1, N_density=False):
+    """
+    Improved version of plot_conditional, uses scipy.stats.binned_statistic_2d instead of matplotlib.pyplot.hexbin allowing more consistent plots.
+    Several seperate plots can be made at once and it can be chosen to share grid and coloring.
+
+    Parameters
+    ----------
+    Data_colection : tuple
+        Data to be plotted. Expected form is (Galaxies, Masses, Galaxies, Masses, ...).
+        Galaxies is a list of arrays, each array containing the properties of one galaxy. Masses is an array of the masses of the galaxies, used for sorting and labeling.
+        Makes seperate plots for each tuple of Galaxies and Masses, but allows to share grid and coloring.
+    type : str, optional, deault: "N"
+        Type of data to be plotted. The default is "N".
+        type: {"feh", "ofe", "N"}
+        Determines the type of plot. "N" means a histogram of stars. "feh" or "ofe" means average [Fe/H] or [O/Fe] map, respectivley.
+    label: str
+        Identifing label for naming the saved file.
+    show: {"page", "all"}, default: "page"
+        Weather to plot a preset number of galaxies specified by page_plot_layout (default 70) to be fitting on an page and saved as pdf.
+        Or to plot all galaxies in larger scale and save as png. In the former case galaxies of median masses get taken out while highest and
+        lowest masses are alway plotted.
+    scale: None or {"lin", "log"}, default: None
+        Color scaling of the plots. ``None`` will result in linear scaling for [O/Fe] and [Fe/H] and log scaling for N.
+    gridsize: int or (int, int), default: 100
+        Gridsize for binned plot.
+    cmap: None or str, default: None
+        Colormap to be used in the plots. ``None`` means "magma" for N, and "coolwarm" otherwise.
+    comps: (0 <= int < 3, 0 <= int < 3), default: (0, 1)
+        Components to plot on the x and y axis, respectivley.
+    color: {"global", "individual"}, default: "global"
+        Weather all subplots share the same color scale, or all subplots scale on their individual maxima and minima. The former returns
+        the used scale for reuse as pre-set values in another plot for better comparison.
+    color_pass: {"local", "global", "first"}, default: "local"
+        "global" means the max min values of the colormap are determined globally for all seperate plots.
+        "local" means the max min values are determined locally for each plot.
+        "first" means the max min values are determined for the first plot and used for all other plots.
+    grid_pass: int, default: 1
+        Number of times the grid is passed over. The grid of the first plot will be passed over grid_pass times.
+    
+    """
+
+
     #Standard colormap
     if cmap == None:
         cmap = "magma" if type == "N" else "coolwarm"
@@ -537,10 +703,6 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
     #Iterate over all datasets of galaxies and calculate all statistics
     #Then use the results to set scalings (color, grid etc.)
     #Either use the same scalings for all datasets, or use different scalings for each dataset
-    #Behaviour following the color_pass and grid_pass arguments
-    #color_pass = "local" -> use local color scalings for each dataset
-    #color_pass = "global" -> use global color scalings for all datasets
-    #grind_pass determines how many times the grid is passed over from the first dataset
 
     Result_col = []
     vmin_s = []
@@ -556,8 +718,9 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
             if i==0 or i>grid_pass:
                 #Do individual grid, with quadratic bins
                 sz = standard_zoomout
-                x_bins = np.linspace(galaxy[:,comps[0]].min()*sz, galaxy[:,comps[0]].max()*sz, gridsize)
-                y_bins = np.linspace(galaxy[:,comps[1]].min()*sz, galaxy[:,comps[1]].max()*sz, gridsize)
+                max_comps = np.max(np.abs(galaxy[:,np.array(comps)]))
+                x_bins = np.linspace(-max_comps*sz, max_comps*sz, gridsize)
+                y_bins = np.linspace(-max_comps*sz, max_comps*sz, gridsize)
             else:
                 #Use grid from first dataset from respective galaxy
                 x_bins = Result_col[0][j][1]
@@ -572,8 +735,19 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
             elif type == "feh":
                 result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,7], statistic="mean", bins=(x_bins, y_bins))
 
-            vmin = min(vmin, result[0].min())
-            vmax = max(vmax, result[0].max())
+            #Filter out nan values
+            not_nan = ~np.isnan(result[0])
+
+            #Allow scaling to be per pc^2
+            if type == "N" and N_density:
+                #Get area of bins in units pc^2
+                area = (result[1][1]-result[1][0])*(result[2][1]-result[2][0])*1e6
+                #Scale counts to counts per pc^2, this also makes sure vmin  and vmax are correctly determined for this case.
+                result[0] = result[0]/area
+
+            
+            vmin = min(vmin, result[0][not_nan].min())
+            vmax = max(vmax, result[0][not_nan].max())
 
             Result.append(result)
         Result_col.append(Result)
@@ -585,8 +759,16 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
             vmax_s.append(vmax)
         elif color_pass == "global":
             #Use global scaling for all datasets
-            vmin_s.append(min(min(vmin_s), vmin))
-            vmax_s.append(max(max(vmax_s), vmax))
+            vmin_s = [min(min(vmin_s), vmin)] * (len(vmin_s)+1)
+            vmax_s = [max(max(vmax_s), vmax)] * (len(vmax_s)+1)
+        elif color_pass == "first":
+            #Use scaling of first dataset for all datasets
+            if i == 0:
+                vmin_s.append(vmin)
+                vmax_s.append(vmax)
+            else:
+                vmin_s.append(vmin_s[0])
+                vmax_s.append(vmax_s[0])
 
     #Plot
     for i, (Galaxies_sorted, Masses_sorted, Result, figsize, vmin, vmax) in enumerate(zip(Galaxies_col_sorted, Masses_col_sorted, Result_col, figsizes, vmin_s, vmax_s)):
@@ -594,21 +776,22 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
         axs = axs.ravel()
         for ax, galaxy, mass, result in zip(axs, Galaxies_sorted, Masses_sorted, Result):
 
-            #Respect scaling log/lin
             statistic = result[0]
-            if type == "N" and N_density:
-                #Get area of bins in units pc^2
-                area = (result[1][1]-result[1][0])*(result[2][1]-result[2][0])*1e6
-                #Scale statistic to be per pc^2
-                statistic = statistic/area
 
             if color == "individual":
                 #Use individual color scaling for each galaxy
-                vmin = statistic.min()
-                vmax = statistic.max()
+                #Filter out nan values
+                not_nan = ~np.isnan(statistic)
+                vmin = statistic[not_nan].min()
+                vmax = statistic[not_nan].max()
+            
+            if scale == "log" and vmin <= 0:
+                vmin = 1
+                if type != "N":
+                    print("Warning: vmin <= 0, setting vmin = 1 for log scaling")
 
-            vmin = 1 if vmin == 0 else vmin
 
+            #Respect scaling log/lin
             if scale == "log":
                 #Logarithmic scaling
                 norm = matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax)
@@ -642,7 +825,7 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
         #Whole figure title + colorbar
         fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "N")} in dependency of total mass M')
         if color == "global":
-            fig.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02)
+            fig.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02, label="N/pc$^2$" if type=="N" and N_density else "")
 
         #Delete axis left over
         n_not_used = len(Galaxies_sorted)-plot_layout[0]*plot_layout[1]
