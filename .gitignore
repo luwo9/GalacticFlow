@@ -6,10 +6,10 @@
 /zzz
 /saves
 /cond_trainer
+/NC_trainer
 developtest.ipynb
 developVis.ipynb
 developVis2.ipynb
-Evaluate.ipynb
 finallyfixed.ipynb
 flowcode copy.py
 nightrunner.py
@@ -23,3 +23,4 @@ sklearn.ipynb
 nohup.out
 MAFTEST.ipynb
 status_output_training.txt
+device_use.py

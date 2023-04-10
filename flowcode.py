@@ -6,8 +6,9 @@ import torch.optim as optim
 import itertools
 import time
 
+import device_use
 #Choose device
-device = "cuda:5"
+device = device_use.device_use
 
 
 # MLP
@@ -415,7 +416,9 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
     lr_schedule = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=gamma)
     
     start_time = time.perf_counter()
-    
+
+    with open("status_output_training.txt", mode="w") as f:
+        f.write("")
     
     #Masks for conditional variable
     mask_cond = torch.full((data.shape[1],), False)
@@ -439,7 +442,7 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
             losses.append(loss.item())
             
             #zero_grad() on model (sometimes safer that optimizer.zero_grad())
-            flow_obj.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             

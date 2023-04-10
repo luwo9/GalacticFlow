@@ -3,9 +3,11 @@ import torch
 import flowcode
 import time
 
+import device_use
+
 
 train_data = torch.load("cond_trainer/data_cond_trainer.pth")
-model = torch.load("cond_trainer/model_cond_trainer.pth").to("cuda:5")
+model = torch.load("cond_trainer/model_cond_trainer.pth").to(device_use.device_use)
 train_parameters = np.load("cond_trainer/params_cond_trainer.npy")
 filename = str(np.load("cond_trainer/filename_cond_trainer.npy"))
 
