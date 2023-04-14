@@ -417,8 +417,9 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
     
     start_time = time.perf_counter()
 
-    with open("status_output_training.txt", mode="w") as f:
-        f.write("")
+    if give_textfile_info:
+        with open("status_output_training.txt", mode="w") as f:
+            f.write("")
     
     #Masks for conditional variable
     mask_cond = torch.full((data.shape[1],), False)
@@ -428,6 +429,7 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
     losses = []
 
     ct = 0
+    cp = 0
     for e in range(epochs):
         for i, batch in enumerate(data_loader):
             ##Debug
@@ -454,6 +456,10 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
                     print(f"Step {ct} of {n_steps}, Loss:{np.mean(losses[-50:])}, lr={lr_schedule.get_last_lr()[0]}")
                 if loss_saver is not None:
                     loss_saver.append(np.mean(losses[-50:]))
+            
+            if ct % 5000 == 0 and not ct == 0:
+                torch.save(flow_obj.state_dict(), f"saves/checkpoints/checkpoint_{cp%2}.pth")
+                cp+=1
             
             ct+=1
             if ct % 10 == 0:

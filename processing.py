@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import glob
 from sklearn.decomposition import PCA
+import externalize as ext
 
 
 def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
@@ -42,58 +43,28 @@ class Processor():
         self.feh_min = feh_min
         self.ofe_min = ofe_min
     
-    def preprocess(self, data_path):
+
+    def get_data(self, data_path):
         #y,y,z vx,vy,vz metals feh,ofe [mass] age/Gyr
-        data = np.load(data_path)
-        data = data.T
-
-        #Exclude mass
-        data = data[:,torch.tensor([True]*9+[False]+[True])]
-
-        #Slice if wanted
-        data_p = data
-        data_p = torch.from_numpy(data_p).type(torch.float)
-
-        #Constrain feh ofe and radius
-        is_valid = (data_p[:,7] >=self.ofe_min)&(data_p[:,8]>=self.feh_min)&(torch.sqrt(torch.sum(data_p[:,:3]**2, dim=1))<=self.R_max)
-
-        data_p = data_p[is_valid]
-
-        #Scale data to train model
-        self.mu = data_p.mean(dim=0)
-        self.std = data_p.std(dim=0)
-        data_p -= self.mu
-        data_p /= self.std
-        return data_p
-
-    def topolar(self, data_car):
-        rho = torch.sqrt(torch.sum(data_car[:,:2]**2, dim=1))
-        phi = torch.arctan2(data_car[:,0], data_car[:,1])
-
-        data_polar = torch.clone(data_car)
-
-        data_polar[:,0] = rho
-        data_polar[:,1] = phi
-        return data_polar
-
-    def frompolar(self, data_pol):
-        is_valid = (data_pol[:,0]>=0)&(data_pol[:,1]<=np.pi)&(data_pol[:,1]>=-np.pi)
-
-        data_car = torch.clone(data_pol[is_valid])
-
-        x_ = data_car[:,0]*torch.cos(data_car[:,1])
-        y_ = data_car[:,0]*torch.sin(data_car[:,1])
-
-        
-
-        data_car[:,0] = x_
-        data_car[:,1] = y_
-
-        return data_car
-
-    def postprocessing(self, notprocessed):
-        processed = notprocessed*self.std+self.mu
-        return processed
+        Data = np.load(data_path).T
+        return Data[:,np.array(9*[True]+[False]+[True])]
+    
+    def constrain_data(self, Data):
+        is_valid = (Data[:,7] >=self.ofe_min)&(Data[:,8]>=self.feh_min)&(np.sqrt(np.sum(Data[:,:3]**2, axis=1))<=self.R_max)
+        Data_c = Data[is_valid].copy()
+        return Data_c
+    
+    def Data_to_flow(self, Data):
+        Data_p = torch.from_numpy(np.copy(Data)).type(torch.float)
+        self.mu = Data_p.mean(dim=0)
+        self.std = Data_p.std(dim=0)
+        Data_p -= self.mu
+        Data_p /= self.std
+        return Data_p
+    
+    def sample_to_Data(self, raw):
+        Data = raw*self.std+self.mu
+        return Data.numpy()
 
 
 
@@ -102,11 +73,12 @@ class Processor_cond():
     """
     Processor for conditional model. Made to complete several tidious tasks along the workflow of training and evaluating a conditional normalizing flow.
     Use: Initialize a Processor_cond object with the desired parameters. Then use it's methods for the desired task.
-    In this workflow it is assumed, that the data will usually be a list of glaxy data arrays, of shape (N, 11), where N is the number of stars in the galaxy.
+    In this workflow it is assumed, that the data will usually be a list of glaxy data arrays, of shape (N, 10+), where N is the number of stars in the galaxy.
 
     The workflow, intended is as follows:
     1. Read the data from the data folder with get_data.
     2. Clean the data with constrain_data.
+    2.5 Choose what data is used (Conditions, which components and which galaxies) choose_subset.
     3. Prepare the data for training the flow with dist_stack and Data_to_flow.
     4. Train the flow.
     5. Sample the conditional flow with sample_conditional.
@@ -122,9 +94,9 @@ class Processor_cond():
         Percentile of the data to be used for the first percentile cut in radial distance.
     percentile2 : float, optional, default: 99
         Percentile of the data to be used for the second percentile cut in radial distance.
-    feh_min : float, optional, default: -1.5
+    feh_min : float, optional, default: -8
         Minimum [Fe/H] to be used in the data. Values below this will be excluded.
-    ofe_min : float, optional, default: -5
+    ofe_min : float, optional, default: -1
         Minimum [O/Fe] to be used in the data. Values below this will be excluded.
     N_min : int, optional, default: 0
         Minimum number of stars to be used in the data. Galaxies with less stars will be excluded.
@@ -146,6 +118,8 @@ class Processor_cond():
         Converts a sample from the flow back to the physical interpretation.
     sample_Conditional(model, cond_indices, Condition, device split_size):
         Samples the conditional flow.
+    choose_subset(Data, N_stars, M_stars, M_dm, comp_use, cond_fn, use_fn, info):
+        Specify data to be considered. Chooses which galaxies and which components are used for training.
 
     Atributes
     ---------
@@ -157,7 +131,7 @@ class Processor_cond():
     log_learn : array of bools
         Array of bools, indicating which components are learnt in log.
     """
-    def __init__(self, percentile1=95, percentile2=99, feh_min=-1.5, ofe_min=-5, N_min=0):
+    def __init__(self, percentile1=95, percentile2=95, feh_min=-8, ofe_min=-1, N_min=0):
         self.percentile1 = percentile1
         self.percentile2 = percentile2
         self.feh_min = feh_min
@@ -172,8 +146,7 @@ class Processor_cond():
     def get_data(self, folder):
         """
         Reads the data from the data folder and returns the data as a list of arrays, each containing the data of one galaxy.
-        Reads 11 components: x, y, z, vx, vy, vz, metallicity, [Fe/H], [O/Fe], mass, age for each star and the galaxy's dark matter mass from the file name.
-        The final data arrays have 12 components where the last one is the total mass of the galaxy, including dark matter.
+        Also calculates the number of stars, the dark matter mass and the stellar mass of each galaxy. The dark matter mass is read from the file name.
 
         Parameters
         ----------
@@ -195,29 +168,20 @@ class Processor_cond():
         """
         files = glob.glob(f"{folder}/*.npy")
 
-        N_stars = np.array([np.load(name, mmap_mode="r").shape[1] for name in files])
-        Cum_N_stars = np.cumsum(N_stars)
+        Data = []
+        N_stars = np.zeros(len(files))
+        M_stars = np.zeros(len(files))
+        M_dm = np.zeros(len(files))
 
-        #How many components?
-        COMP_USE = 12
-        Data = np.zeros((Cum_N_stars[-1], COMP_USE))
-        M_stars_s = np.zeros(len(files))
-        M_dm_s = np.zeros(len(files))
-
-        for i,(file, start, end) in enumerate(zip(files, Cum_N_stars-N_stars, Cum_N_stars)):
+        for i, file in enumerate(files):
             galaxy = np.load(file).T
-            M_dm = float(file.split("_")[-1][:-4])
-            M_dm_s[i] = M_dm
 
-            M_stars = np.sum(galaxy[:,9])
-            M_stars_s[i] = M_stars
+            N_stars[i] = galaxy.shape[0]
+            M_dm[i] = float(file.split("_")[-1][:-4])
+            M_stars[i] = np.sum(galaxy[:,9])
+            Data.append(galaxy)
 
-            #Keep star masses to correct totel mass for constraining later
-            #galaxy = galaxy[:,np.array([True]*9+[False]+1*[True])]
-            galaxy = np.pad(galaxy, ((0,0),(0,1)), constant_values=M_stars+M_dm) #already here?
-
-            Data[start:end] = galaxy
-        return self.galaxysplit(Data, N_stars), N_stars, M_stars_s, M_dm_s
+        return Data, N_stars, M_stars, M_dm
 
 
     #Work with Galaxy data and stack to distribution interpretation with diststack
@@ -245,9 +209,9 @@ class Processor_cond():
         New constrains to strars can easily be added in the format:
         is_valid = is_valid & <condition>
 
-        The galaxies number of stars, the stellar mass of the galaxy as well as it's total mass (in the data array) are automatically updated.
+        The galaxies number of stars and the stellar mass of the galaxy are automatically updated.
 
-        Also the total number of stars in the galaxy can be constrained, such that galaxies with less stars are excluded.
+        The total number of stars in the galaxy can be constrained, such that galaxies with less stars are excluded.
 
         Also again, the arrays containing the number of stars, the stellar masses and the dark matter masses are updated, so that there is one entry for each galaxy remaining.
 
@@ -275,6 +239,7 @@ class Processor_cond():
         Note
         ----
 
+        Hierachy of constraints: R; Z; Fe/H; O/Fe
         The distance is constrained in the following way:
         The percentile1-th percentile of the stars distances is taken as the maximum distance but if this is larger than R_MAX_MAX, the maximum distance is set to R_MAX_MAX.
         R_MAX_MAX is the maximum distance of the largest galaxy in the sample expected.
@@ -292,10 +257,7 @@ class Processor_cond():
             N_old += galaxy.shape[0]
 
             #Constrains on stars
-
-            #Metallicity
-            #No metallicity extreme stars
-            is_valid = (galaxy[:,7] >=self.ofe_min)&(galaxy[:,8]>=self.feh_min)
+            #Watch out for hierachy of constraints
 
             #Distance
             #Get radius for a given percentile of stars
@@ -313,23 +275,48 @@ class Processor_cond():
                 R_max2 = np.percentile(np.sqrt(np.sum(galaxy[is_validR,:3]**2, axis=1)), self.percentile2)
                 is_validR = is_validR&(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max2))
 
-            is_valid = is_valid&is_validR
+            is_valid = is_validR
+
+            #Metallcity
+            #Ignore last 10 values of metallicity
+            last_10 = np.argsort(galaxy[:,6])[-10:]
+            is_valid = is_valid & (np.isin(np.arange(galaxy.shape[0]), last_10, invert=True))
+            #is_valid = is_valid & (galaxy[:,6]>=np.quantile(galaxy[is_valid,6], 10e-4))&(galaxy[:,6]<=np.quantile(galaxy[is_valid,6], 0.9999))
+
+            #Fe/H
+            is_valid = is_valid & (galaxy[:,7]>=self.feh_min)
+            #is_valid = is_valid & (galaxy[:,7]>=-5)&(galaxy[:,7]<=np.quantile(galaxy[is_valid,7], 0.9999))
+
+            #O/Fe
+            is_valid = is_valid & (galaxy[:,8]>=self.ofe_min)
+            #is_valid = is_valid & (galaxy[:,8]>=np.quantile(galaxy[is_valid,8], 10e-3))&(galaxy[:,8]<=np.quantile(galaxy[is_valid,8], 1-10e-3))
 
 
+            #Metallicity
+            #Wrong indices! ofe and feh are switched
+            #No metallicity extreme stars
+            #is_valid = (galaxy[:,7] >=self.ofe_min)&(galaxy[:,8]>=self.feh_min)
+            #TEST:
+            #7: -5 and 0.9999 quantile
+            #8: 10e-4 quantile  and 1-10e-4 quantile
+            #6: 10e-3 quantile and 0.99935 quantile
+            #new:
+            #
 
-            #Update Galaxy total mass by excluded stars, later update N stars
-            galaxy[:, 11] -= np.sum(galaxy[~is_valid, 9])
 
             #Apply constrains now
             galaxy = galaxy[is_valid]
+
+            #Calculate new number of stars
             N_star = galaxy.shape[0]
 
-            #Constrain on galaxies (number of stars)
+            #Constrain on galaxies (new number of stars)
             if N_star>=self.N_min:
-                #Rotate the glaxy in the x-y plane so that it is horizontal
+                #Rotate the glaxy in the x-y plane so that it is horizontal, as part of the data cleaning
+                #Performed here for efficiency, since some galaxies are removed by now
                 galaxy = rotate_galaxy_xy(galaxy, quant=0.9)
 
-                Data_out.append(galaxy[:,np.array([True]*9+[False]+2*[True])]) # Exclude individual star masses, no longer needed
+                Data_out.append(galaxy)
                 N_stars.append(N_star)
                 M_stars.append(np.sum(galaxy[:,9]))
                 M_dm_new.append(M_dm)
@@ -343,11 +330,84 @@ class Processor_cond():
             print(f"Cut out {len(Data)-len(Data_out)} of {len(Data)} galaxies, {N_old-np.sum(N_stars)} of {N_old} stars (~{(N_old-np.sum(N_stars))/N_old*100 :.0f}%).")
 
         return Data_out, N_stars, M_stars, M_dm_new
+    
 
+    #This function can be rewritten:
+    #Components can be chosen in the data cleaning->Not so nice rather completley outsource in supplied functions, to let processing.py be static.
+    #The subset can be chosen in the data cleaning-->^
+    #The conditions can be moved to diststack where then also hstack is done, additional input is N_stars, M_stars, M_dm
+    #In general the condition finding will also vary so it can be outsourced to a function using (galaxy, M_star, M_dm_g) and returning the Condition array as below
+    #Or inputting (Data, N_stars, M_stars, M_dm) and returning the condition array, then diststack only takes additonal input.
+    def choose_subset(self, Data, N_stars, M_stars, M_dm, comp_use = np.array([True]*9+[False]+[True]), cond_fn = ext.cond_M_stars, use_fn = ext.MW_like_galaxy, info=True):
+        """
+        Choose a subset of the data. Chosen are components, condition and galaxies.
+        This is not part of the data cleaning, but rather a choice of what to be used.
+
+        Parameters
+        ----------
+        Data : list of arrays
+            List of arrays, each containing the data of one galaxy.
+        N_stars : array
+            Array containing the number of stars in each galaxy.
+        M_stars : array
+            Array containing the total mass of stars in each galaxy.
+        M_dm : array
+            Array containing the total mass of dark matter in each galaxy.
+        comp_use : array of bools, optional, default: np.array([True]*9+[False]+[True])
+            Array of bools, each entry corresponds to a component, if True the component is used.
+            False means the component is not used. The order is: x, y, z, vx, vy, vz, Z, Fe/H, O/Fe, m_star, age.
+        cond_fn : function, optional, default: externalize.cond_M_stars
+            Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a float to be used as the condition.
+        use_fn : function, optional, default: externalize.MW_like_galaxy
+            Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a bool, if True the galaxy is used.
+        info : bool, optional, default: True
+            If true print info about the used subset of galaxies.
         
+        Returns
+        -------
+        Data_ch : list of arrays
+            List of arrays, each containing the data of one galaxy, after choosing the subset.
+        N_stars_ch : array
+            Array containing the number of stars in each galaxy, after choosing the subset.
+        M_stars_ch : array
+            Array containing the total mass of stars in each galaxy, after choosing the subset.
+        M_dm_ch : array
+            Array containing the total mass of dark matter in each galaxy, after choosing the subset.
+        """
+        Data_ch = []
+        N_stars_ch = []
+        M_stars_ch = []
+        M_dm_ch = []
+
+        for galaxy, N_star, M_star, M_dm_g in zip(Data, N_stars, M_stars, M_dm):
+            #Choose comonents
+            galaxy = galaxy[:, comp_use]
+            #Choose subset
+            if use_fn(galaxy, N_star, M_star, M_dm_g):
+                #Choose condition properties and pad galaxy with it
+                Condition = np.array([cond_fn(galaxy, N_star, M_star, M_dm_g)])
+                galaxy = np.hstack((galaxy, Condition.reshape(-1,Condition.shape[0]).repeat(galaxy.shape[0], axis=0)))
+
+                #Now select the subset
+                Data_ch.append(galaxy)
+                N_stars_ch.append(N_star)
+                M_stars_ch.append(M_star)
+                M_dm_ch.append(M_dm_g)
+
+        N_stars_ch = np.array(N_stars_ch)
+        M_stars_ch = np.array(M_stars_ch)
+        M_dm_ch = np.array(M_dm_ch)
+
+        if info:
+            #Info about galaxies choosen in this subset, not stars
+            print(f"Chose {len(Data_ch)} of {len(Data)} galaxies.")
+        
+        return Data_ch, N_stars_ch, M_stars_ch, M_dm_ch
 
 
-    def Data_to_flow(self, Data_c, log_learn=np.array([])):
+
+
+    def Data_to_flow(self, Data_c, transformation_functions, transformation_indices, inverse_transformations):
         """
         Converts the data to a format that can be used for training the flow.
         Namely the data is transformed to a torch tensor, the components to learn in log are transformed to log and the data is normalized such that it has mean 0 and std 1.
@@ -357,8 +417,13 @@ class Processor_cond():
 
         Data_c : array
             Array of (constrained) data, to be transformed to a format that can be used for training the flow.
-        log_learn : array (optional), default: np.array([])
-            Array containing the indices of the components to learn in log. If empty, no components are learned in log.
+        transformation_functions : list of functions
+            List of functions, each function takes an array and transforms it. Maps (N, M) -> (N, M).
+        transformation_indices : list of arrays
+            List of arrays, each array contains the indices of the components to be transformed by the corresponding function in transformation_functions.
+        inverse_transformations : list of functions
+            List of functions, each function takes an array and transforms it. Maps (N, M) -> (N, M).
+            The inverse of the corresponding function in transformation_functions, this is later used to transform the samples back to the physical data.
 
         Returns
         -------
@@ -366,18 +431,24 @@ class Processor_cond():
         Data_p : torch tensor
             Tensor of the transformed data.
         """
-        Data_p = torch.from_numpy(np.copy(Data_c)).type(torch.float)
+        Data_p = np.copy(Data_c)
 
-        #Components to learn in log
-        self.log_learn = log_learn
-        Data_p[:,self.log_learn] = torch.log10(Data_p[:,self.log_learn])
+        #Learn components scaled with corresponding functions
+        self.trf_fn_inv = inverse_transformations
+        self.trf_ind = transformation_indices
+        self.trf_fn = transformation_functions
+        for inds, fn in zip(self.trf_ind, self.trf_fn):
+            Data_p[:,inds] = fn(Data_p[:,inds])
+
 
         #Subtract mean from all values and divide by std to normalize data
-        self.mu = Data_p.mean(dim=0)
-        self.std = Data_p.std(dim=0)
+        self.mu = Data_p.mean(axis=0)
+        self.std = Data_p.std(axis=0)
 
         Data_p -= self.mu
         Data_p /= self.std
+
+        Data_p = torch.from_numpy(Data_p).type(torch.float)
         return Data_p
 
 
@@ -398,8 +469,11 @@ class Processor_cond():
         Data : array
             Array of the physical data.
         """
-        Data = raw*self.std+self.mu
-        Data[:,self.log_learn] = 10**(Data[:,self.log_learn])
+        std = torch.from_numpy(self.std).type(torch.float)
+        mu = torch.from_numpy(self.mu).type(torch.float)
+        Data = raw*std+mu
+        for inds, fn in zip(self.trf_ind[::-1], self.trf_fn_inv[::-1]):
+            Data[:,inds] = fn(Data[:,inds])
         return Data.numpy()
 
     def sample_Conditional(self, model, cond_indices, Condition, device="cuda", split_size=300000):
@@ -428,14 +502,17 @@ class Processor_cond():
             Array containing the sample of the flow for the given condition.
         """
         #Format: Contition is (N,n_cond) array cond_indices has length n_cond
-        Cond_flow = torch.from_numpy(np.copy(Condition)).type(torch.float)
+        Cond_flow = np.copy(Condition)
         
-        #Transform condition to log if trained in log
-        is_log_learn = np.isin(np.sort(cond_indices), self.log_learn)
-        Cond_flow[:, is_log_learn] = torch.log10(Cond_flow[:, is_log_learn])
+        #Transform condition if scaled
+        for inds, fn in zip(self.trf_ind, self.trf_fn):
+            is_trf = np.isin(np.sort(cond_indices), inds)
+            Cond_flow[:, is_trf] = fn(Cond_flow[:, is_trf])
 
         #Scale condition as used for training
         Cond_flow = (Cond_flow-(self.mu[cond_indices]))/(self.std[cond_indices])
+
+        Cond_flow = torch.from_numpy(Cond_flow).type(torch.float)
 
         #Evaluate the model, use only stacks of split_size because GPU memory is limited
         #Here e.g. sampling 3*10^7 points with 10 components each, with 3*10^7 points already occupied by the condition + model on GPU needs more than the 10GB available

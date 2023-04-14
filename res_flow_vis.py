@@ -94,10 +94,12 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
 
         #Do computation
         result_data = binned_statistic_2d(data_true[ind1], data_true[ind2], data_true[ind1], statistic="count", bins=(x_bins, y_bins))
+        result_data = list(result_data)
         results_data.append(result_data)
 
         if data_flow is not None:
             result_flow = binned_statistic_2d(data_flow[ind1], data_flow[ind2], data_flow[ind1], statistic="count", bins=(result_data[1], result_data[2]))
+            result_flow = list(result_flow)
             results_flow.append(result_flow)
 
         if N_density:
@@ -107,11 +109,11 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
                 result_flow[0] = result_flow[0]/area
 
         
-        vmin = np.minimum(vmin, result_data.statistic.min())
-        vmax = np.maximum(vmax, result_data.statistic.max())
+        vmin = np.minimum(vmin, result_data[0].min())
+        vmax = np.maximum(vmax, result_data[0].max())
         if data_flow is not None and color_pass=="global":
-            vmin = np.minimum(vmin, result_flow.statistic.min())
-            vmax = np.maximum(vmax, result_flow.statistic.max())
+            vmin = np.minimum(vmin, result_flow[0].min())
+            vmax = np.maximum(vmax, result_flow[0].max())
 
         vmin = np.maximum(vmin, 1)
     #Ploting
@@ -156,7 +158,7 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
     
     #Add colorbar and subtitle
     fig1.suptitle("<N> corner plot. Left: data, right: sample" if data_flow is not None else "<N> corner plot of the data")
-    fig1.colorbar(im1, ax=axs1, pad=0.03, aspect=33, shrink=1, label="N" if not N_density else "N/pc$^2$")
+    fig1.colorbar(im1, ax=axs1, pad=0.03, aspect=33, shrink=1, label="N" if not N_density else "N/kpc$^2$")
 
     plt.delaxes(axs1[0][1])
     if data_flow is not None:
@@ -358,7 +360,7 @@ def xylim(Galaxies, xylim_array, comps=(0,1)):
     return Galaxies_out
 
 #How many galaxies to plot per page in the plot_conditional function, if a page is plotted. ormat: (n_rows, n_columns)
-page_plot_layout = (10, 7) #(8, 6)
+page_plot_layout = (4,3)#(10, 7) #(8, 6)
 #How many galaxyies to plot per row in the plot_conditional function, if all galaxies are plotted.
 n_row_all = 4
 
@@ -735,13 +737,14 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
             elif type == "feh":
                 result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,7], statistic="mean", bins=(x_bins, y_bins))
 
+            result = list(result)
             #Filter out nan values
             not_nan = ~np.isnan(result[0])
 
-            #Allow scaling to be per pc^2
+            #Allow scaling to be per kpc^2
             if type == "N" and N_density:
-                #Get area of bins in units pc^2
-                area = (result[1][1]-result[1][0])*(result[2][1]-result[2][0])*1e6
+                #Get area of bins in units kpc^2
+                area = (result[1][1]-result[1][0])*(result[2][1]-result[2][0])
                 #Scale counts to counts per pc^2, this also makes sure vmin  and vmax are correctly determined for this case.
                 result[0] = result[0]/area
 
@@ -825,7 +828,7 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
         #Whole figure title + colorbar
         fig.suptitle(f'{"<[O/Fe]>" if type == "ofe" else ("<[Fe/H]>" if type == "feh" else "N")} in dependency of total mass M')
         if color == "global":
-            fig.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02, label="N/pc$^2$" if type=="N" and N_density else "")
+            fig.colorbar(im, ax=axs, shrink = 0.95, location="bottom", aspect=50, pad=0.02, label="N/kpc$^2$" if type=="N" and N_density else "")
 
         #Delete axis left over
         n_not_used = len(Galaxies_sorted)-plot_layout[0]*plot_layout[1]
