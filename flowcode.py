@@ -417,8 +417,8 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
     
     start_time = time.perf_counter()
 
-    if give_textfile_info:
-        with open("status_output_training.txt", mode="w") as f:
+    if not give_textfile_info==False:
+        with open(f"status_output_training_{give_textfile_info}.txt", mode="w+") as f:
             f.write("")
     
     #Masks for conditional variable
@@ -449,8 +449,8 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
             optimizer.step()
             
             if ct % 100 == 0:
-                if give_textfile_info:
-                    with open("status_output_training.txt", mode="a") as f:
+                if not give_textfile_info==False:
+                    with open(f"status_output_training_{give_textfile_info}.txt", mode="a") as f:
                         f.write(f"Step {ct} of {n_steps}, Loss:{np.mean(losses[-50:])}, lr={lr_schedule.get_last_lr()[0]}\n")
                 else:
                     print(f"Step {ct} of {n_steps}, Loss:{np.mean(losses[-50:])}, lr={lr_schedule.get_last_lr()[0]}")
@@ -459,8 +459,15 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
             
             if ct % 5000 == 0 and not ct == 0:
                 torch.save(flow_obj.state_dict(), f"saves/checkpoints/checkpoint_{cp%2}.pth")
+                curr_time = time.perf_counter()
+                np.save(f"saves/checkpoints/losses_{cp%2}.npy", np.array(loss_saver+[curr_time-start_time]))
                 cp+=1
             
             ct+=1
-            if ct % 10 == 0:
+            if lr_schedule.get_last_lr()[0] <= 3*10**-6:
+                decrease_step = 120
+            else:
+                decrease_step = 10
+
+            if ct % decrease_step == 0:
                 lr_schedule.step()
