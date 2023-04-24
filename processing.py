@@ -131,12 +131,13 @@ class Processor_cond():
     log_learn : array of bools
         Array of bools, indicating which components are learnt in log.
     """
-    def __init__(self, percentile1=95, percentile2=95, feh_min=-8, ofe_min=-1, N_min=0):
+    def __init__(self, percentile1=95, percentile2=95, feh_min=-8, ofe_min=-1, N_min=0, r_max=27.7):
         self.percentile1 = percentile1
         self.percentile2 = percentile2
         self.feh_min = feh_min
         self.ofe_min = ofe_min
         self.N_min = N_min
+        self.r_max = r_max
 
     
     #Some cleaning up and clarification could be done:
@@ -263,7 +264,7 @@ class Processor_cond():
             #Get radius for a given percentile of stars
             R_max = np.percentile(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1)), self.percentile1)
             #But cut at most at R_MAX_MAX(>largest galaxy in sample), dont include other structures
-            R_MAX_MAX = 27.7
+            R_MAX_MAX = self.r_max
             R_max = np.minimum(R_max, R_MAX_MAX)
             costrained_by_preset = R_max == R_MAX_MAX
             #Only stars within this radius

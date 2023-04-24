@@ -22,5 +22,5 @@ To_do
 sklearn.ipynb
 nohup.out
 MAFTEST.ipynb
-status_output_training.txt
+status_output_training*.txt
 device_use.py
