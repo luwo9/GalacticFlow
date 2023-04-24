@@ -26,6 +26,61 @@ def MW_like_galaxy(galaxy, N_star, M_star, M_dm_g):
     """
     return M_star+M_dm_g > 5e11
 
+
+#Function simmilar to MW_like_galaxy, but forbids galaxies with a certain dm mass. (Leave one/multiple out)
+def construct_MW_like_galaxy_leavout(M_dm_leavout):
+    """
+    Constructs a function that selects galaxies that are Milky Way like, but forbids galaxies with selected dark matter masses.
+    Intended to un-select galaxies with a certain dark matter mass, to leave them out of the training.
+    Dark matter mass is a good tag to chose a galaxy because it does not change with any constrains or simmilar.
+
+    Parameters
+    ----------
+
+    M_dm_leavout : array or list
+        Array or list of dark matter masses that should be excluded from the selection.
+
+    Returns
+    -------
+
+    function
+        Function that selects galaxies that are Milky Way like, but forbids galaxies with selected dark matter masses.
+    """
+    print("Remember it's best to once choose a subset to view, use those DM masses and choose a 2nd subset for training. SORT Mdm before choosing indices")
+    def MW_like_galaxy_leavout(galaxy, N_star, M_star, M_dm_g):
+        """
+        Selects galaxies that are Milky Way like, but forbids galaxies with selected dark matter masses.
+        Wheater a galaxy is Milky Way like is determined by MW_like_galaxy.
+
+        Parameters
+        ----------
+
+        galaxy : array
+            Array containing the data of one galaxy.
+        N_star : int
+            Number of stars in the galaxy.
+        M_star : float
+            Total stellar mass of the galaxy.
+        M_dm_g : float
+            Total dark matter mass of the galaxy.
+
+        Returns
+        -------
+
+        bool
+            True if the galaxy is considered Milky way like and has not forbidden dark matter mass, False otherwise.
+        """
+        #Test if is MW like
+        is_MW_like = MW_like_galaxy(galaxy, N_star, M_star, M_dm_g)
+
+        #Test if has forbidden dm mass
+        is_included = np.isin(M_dm_g, M_dm_leavout, invert=True).item()
+
+        return is_MW_like and is_included
+    
+    return MW_like_galaxy_leavout
+
+
 def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
     """
     Simply returns the stellar mass as condition.
