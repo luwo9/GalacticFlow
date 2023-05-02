@@ -47,11 +47,13 @@ class Processor():
     def get_data(self, data_path):
         #y,y,z vx,vy,vz metals feh,ofe [mass] age/Gyr
         Data = np.load(data_path).T
+        self.M_stars = np.sum(Data[:,9])
         return Data[:,np.array(9*[True]+[False]+[True])]
     
     def constrain_data(self, Data):
         is_valid = (Data[:,7] >=self.ofe_min)&(Data[:,8]>=self.feh_min)&(np.sqrt(np.sum(Data[:,:3]**2, axis=1))<=self.R_max)
         Data_c = Data[is_valid].copy()
+        self.M_stars = np.sum(Data_c[:,9])
         return Data_c
     
     def Data_to_flow(self, Data):
@@ -61,6 +63,18 @@ class Processor():
         Data_p -= self.mu
         Data_p /= self.std
         return Data_p
+    
+    def sample_flow(self, model, N_samples, split_size=500000):
+        model.eval()
+        sample = []
+        with torch.inference_mode():
+            for i in range(N_samples//split_size+1):
+                sample_size = N_samples % split_size if i==0 else split_size
+                if sample_size>0:
+                    res = (model.sample_Flow(sample_size, torch.tensor([]))).cpu()
+                    sample.append(res)
+        sample = torch.vstack(sample)
+        return sample
     
     def sample_to_Data(self, raw):
         Data = raw*self.std+self.mu
@@ -358,7 +372,7 @@ class Processor_cond():
             Array of bools, each entry corresponds to a component, if True the component is used.
             False means the component is not used. The order is: x, y, z, vx, vy, vz, Z, Fe/H, O/Fe, m_star, age.
         cond_fn : function, optional, default: externalize.cond_M_stars
-            Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a float to be used as the condition.
+            Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a tuple of floats, specifiying the condition of each galaxy.
         use_fn : function, optional, default: externalize.MW_like_galaxy
             Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a bool, if True the galaxy is used.
         info : bool, optional, default: True
@@ -386,7 +400,7 @@ class Processor_cond():
             #Choose subset
             if use_fn(galaxy, N_star, M_star, M_dm_g):
                 #Choose condition properties and pad galaxy with it
-                Condition = np.array([cond_fn(galaxy, N_star, M_star, M_dm_g)])
+                Condition = np.array([*cond_fn(galaxy, N_star, M_star, M_dm_g)])
                 galaxy = np.hstack((galaxy, Condition.reshape(-1,Condition.shape[0]).repeat(galaxy.shape[0], axis=0)))
 
                 #Now select the subset

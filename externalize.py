@@ -81,6 +81,8 @@ def construct_MW_like_galaxy_leavout(M_dm_leavout):
     return MW_like_galaxy_leavout
 
 
+#Condition functions, use intended as cond_fn in choose_subset
+
 def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
     """
     Simply returns the stellar mass as condition.
@@ -100,10 +102,10 @@ def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
     Returns
     -------
 
-    Condition : float
-        Condition for the galaxy.
+    Condition : tuple of floats
+        Conditions of the galaxy, in this case the stellar mass.
     """
-    return M_star
+    return (M_star,)
 
 #Functions used for data preperation in Data_to_flow
 def tanh_smoothing(x):
