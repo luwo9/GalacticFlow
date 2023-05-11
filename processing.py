@@ -32,6 +32,8 @@ def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
                         [np.sin(-angle), np.cos(-angle)]])
     galaxy_rot = np.copy(galaxy)
     galaxy_rot[:,:2] = galaxy_rot[:,:2]@rot_mat
+    #Also rotate velocities
+    galaxy_rot[:,3:5] = galaxy_rot[:,3:5]@rot_mat
     return galaxy_rot
 
 
@@ -106,7 +108,7 @@ class Processor_cond():
 
     percentile1 : float, optional, default: 95
         Percentile of the data to be used for the first percentile cut in radial distance.
-    percentile2 : float, optional, default: 99
+    percentile2 : float, optional, default: 95
         Percentile of the data to be used for the second percentile cut in radial distance.
     feh_min : float, optional, default: -8
         Minimum [Fe/H] to be used in the data. Values below this will be excluded.
