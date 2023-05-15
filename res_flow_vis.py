@@ -322,8 +322,8 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
             every = 1 if every == 0 else every
             data_corner = np.hstack((data_true[:,::every], data_flow[:,::every]))
             data_dict = dict(zip(names, data_corner))
-            data_dict["select"] = np.append(np.full(data_true[:,::every].shape[1],"data"),np.full(data_flow[:,::every].shape[1],"model"))
-            hue = "select"
+            hue = "Legend:"
+            data_dict[hue] = np.append(np.full(data_true[:,::every].shape[1],"Data"),np.full(data_flow[:,::every].shape[1],"Flow"))
         else:
             every = data_true.shape[1]//1000
             every = 1 if every == 0 else every
@@ -627,7 +627,9 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
 
     plottables = ["r/kpc", "z/kpc", "|v|/km/s", "Z", "[Fe/H]", "[O/Fe]", "age/Gyr"]
 
-    fig, axs = plt.subplots(2,4, figsize=(16,8), layout="constrained")
+    plot_layout = (3,3)
+    figsize = (plot_layout[1]*4, plot_layout[0]*4)
+    fig, axs = plt.subplots(*plot_layout, figsize=figsize, layout="constrained")
     axs = axs.ravel()
 
     for galaxy, mass in zip(Galaxies, Massses):
