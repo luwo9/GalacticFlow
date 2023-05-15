@@ -50,13 +50,13 @@ class Processor():
         #y,y,z vx,vy,vz metals feh,ofe [mass] age/Gyr
         Data = np.load(data_path).T
         self.M_stars = np.sum(Data[:,9])
-        return Data[:,np.array(9*[True]+[False]+[True])]
+        return Data
     
     def constrain_data(self, Data):
         is_valid = (Data[:,7] >=self.ofe_min)&(Data[:,8]>=self.feh_min)&(np.sqrt(np.sum(Data[:,:3]**2, axis=1))<=self.R_max)
         Data_c = Data[is_valid].copy()
         self.M_stars = np.sum(Data_c[:,9])
-        return Data_c
+        return Data_c[:,np.array(9*[True]+[False]+[True])]
     
     def Data_to_flow(self, Data):
         Data_p = torch.from_numpy(np.copy(Data)).type(torch.float)
@@ -542,3 +542,88 @@ class Processor_cond():
         sample = torch.vstack(sample)
 
         return torch.hstack((sample, torch.from_numpy(Condition).type(torch.float)))
+    
+    #Function to correctly evaluate the pdf of the flow
+    def log_prob(self, model, data, cond_indices, device="cuda", split_size=300000):
+        """
+        Evaluates the log probability of the flow for a given data sample.
+        The evaluation is done on the GPU in batches of split_size, because the GPU memory is limited.
+        This is to take into account that any scaling of the date prior to training needs to be respected in the probability density function.
+        Uses the (log) Jacobian determinant of the transformation functions specified in Data_to_flow (not implemented yet).
+
+        Parameters
+        ----------
+
+        model : flowcode.NSFLow object
+            The flow model to evaluate.
+        data : array
+            Array containing the data sample with conditions.
+        cond_indices : array
+            Array containing the indices of the components of the condition.
+        device : string (optional), default: "cuda"
+            The device the model is on and the evaluation is done on.
+        split_size : int (optional), default: 300000
+            The size of the batches the evaluation is done in.
+        
+        Returns
+        -------
+
+        log_prob : array
+            Array containing the log probability of the flow for the given data sample.
+        """
+        if self.trf_logdet is None:
+            raise ValueError("Derivatives not specified in Data_to_flow, cannot evaluate log_prob")
+        
+        mask_cond = np.isin(np.arange(data.shape[1]), cond_indices)
+        #Format: data is (N,n) array
+        data_flow = np.copy(data)
+        logdet_transform = np.zeros((data_flow.shape[0],))        
+
+        #x_flow = trandformations(x), x_cond_flow = transformations(x_cond)
+        #log p(x|x_cond) = log p_flow(x_flow|x_cond_flow) + sum_transformations(logdet_trf) , where logdet_trf is evaluated at the current x_flow at each transformation step
+
+        for inds, fn, logdet in zip(self.trf_ind, self.trf_fn, self.trf_logdet):
+            data_flow[:,inds] = fn(data_flow[:,inds])
+            is_transformed = np.isin(np.arange(data_flow.shape[1]), inds)
+            x_flow = data_flow[:,is_transformed & ~mask_cond]
+            x_cond_flow = data_flow[:,is_transformed & mask_cond]
+            #Evaluate logdet of transformation x_flow is the real input of the jacobian, i.e. jacobian matrix is len(x_flow) x len(x_flow)
+            #However thaere may be some cases where the condition is needed as input e.g. transforming p(x|y) to p(r|phi)
+            #with jacobian simply dr/dx = x/sqrt(x^2+y^2), which depends on y
+            #The jacobian for transforming pdfs is only needed for any unconditional values as it does not need to be normalized in the condition
+            #Most functions will however be logdet(x,_) where _ is not used
+            if (is_transformed & ~mask_cond).any():
+                logdet_transform += logdet(x_flow, x_cond_flow)
+
+        #Now the scaling transform: x_flow = (x-mu)/std
+        data_flow = (data_flow-(self.mu))/(self.std)
+        #The jacobian matrix is diagonal with entries 1/std, such that the logdet is simply sum(log(1/std)) = sum(-log(std))
+        #This is the same for every point in the sample.
+        #The logdet for the conditional part is irrelevant as there is no normalization in the condition
+        logdet_transform -= np.sum(np.log(self.std))
+
+        #Now after all transformations thae transformed data point is:
+        x_flow = data_flow[:,~mask_cond]
+        x_cond_flow = data_flow[:,mask_cond]
+
+        #Evaluate the model, use only stacks of split_size because GPU memory is limited
+
+        x_flow = torch.from_numpy(x_flow).type(torch.float)
+        x_cond_flow = torch.from_numpy(x_cond_flow).type(torch.float)
+        logdet_transform = torch.from_numpy(logdet_transform).type(torch.float)
+
+        model.eval()
+        log_prob = []
+        with torch.inference_mode():
+            for split in torch.split(x_flow, split_size):
+                sample, model_logdet, prior_logprob = model(split.to(device), x_cond_flow.to(device))
+                res = (model_logdet + prior_logprob + logdet_transform).cpu()
+                log_prob.append(res)
+        
+        log_prob = torch.hstack(log_prob)
+
+        return log_prob
+
+
+        
+        
