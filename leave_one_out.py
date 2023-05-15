@@ -11,6 +11,7 @@ import torch
 import numpy as np
 import subprocess
 import time
+import gc
 #For reloading modules
 import importlib
 
@@ -19,13 +20,13 @@ import importlib
 
 #Retraining mode: If True, the the models as saved by this script are loaded and the training is continued
 #If False, the models are trained from scratch
-retrain = True
+retrain = False
 
 #This number characterizes how often the training is restarted, if the training crashes
 n_max_reload_on_crash = 2
 
 #Base filename for the models savefiles
-base_filename = "leavout_M_star_MWs_CL2_24_10_512_8_lo"
+base_filename = "leavout_MttZ_MWs_CL2_24_10_512_8_lo"
 
 
 #Initiate a processor to handle data
@@ -35,7 +36,7 @@ Data, N_stars, M_stars, M_dm = mpc.get_data("all_sims")
 
 Data_const, N_stars_const, M_stars_const, M_dm_const = mpc.constraindata(Data, M_dm)
 
-Data_sub_v, N_stars_sub_v, M_stars_sub_v, M_dm_sub_v = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = ext.MW_like_galaxy)
+Data_sub_v, N_stars_sub_v, M_stars_sub_v, M_dm_sub_v = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = ext.MW_like_galaxy, cond_fn=ext.cond_M_stars_2age_avZ)
 
 
 #The GPUs to use will be proceseed to "cuda:GPU_nb"
@@ -43,7 +44,7 @@ GPU_nbs = np.array([2,3,4,5,6,7,8,9])
 
 n_GPU_use = len(GPU_nbs)
 
-leaveouts = np.array([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])
+leaveouts = [None,1,2,4,5,15] #[None,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
 
 
 class leavout_model:
@@ -55,8 +56,9 @@ class leavout_model:
 
     def start(self, GPU_nb):
         filename = base_filename + f"{self.leavout}"
-        leavout_fn = ext.construct_MW_like_galaxy_leavout(M_dm_sub_v[self.leavout])
-        Data_sub, N_stars_sub, M_stars_sub, M_dm_sub = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = leavout_fn)
+        #Check if self.leavout is None, then leave out nothing
+        leavout_fn = ext.construct_MW_like_galaxy_leavout(M_dm_sub_v[self.leavout] if self.leavout is not None else -1)
+        Data_sub, N_stars_sub, M_stars_sub, M_dm_sub = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = leavout_fn, cond_fn=ext.cond_M_stars_2age_avZ)
 
         device = f"cuda:{GPU_nb}"
 
@@ -67,7 +69,7 @@ class leavout_model:
         importlib.reload(device_use)
         importlib.reload(flowcode)
 
-        model = flowcode.NSFlow(24, 10, 1, flowcode.NSF_CL2, K=10, B=3, network=flowcode.MLP, network_args=(512,8,0.2))
+        model = flowcode.NSFlow(24, 10, 4, flowcode.NSF_CL2, K=10, B=3, network=flowcode.MLP, network_args=(512,8,0.2))
         model = model.to(device)
 
         if retrain:
@@ -81,14 +83,14 @@ class leavout_model:
             gamma = 0.998
             app = "re"
         else:
-            n_epochs = 10
+            n_epochs = 18
             init_lr = 0.00009
             gamma = 0.998
             app = ""
 
         torch.save(Data_flow, "cond_trainer/data_cond_trainer.pth")
         torch.save(model, "cond_trainer/model_cond_trainer.pth")
-        np.save("cond_trainer/params_cond_trainer.npy", np.append(np.array([10]),np.array([n_epochs,init_lr,1024,gamma])))
+        np.save("cond_trainer/params_cond_trainer.npy", np.append(np.array([10,11,12,13]),np.array([n_epochs,init_lr,1024,gamma])))
         np.save("cond_trainer/filename_cond_trainer.npy", filename+app)
 
         process = subprocess.Popen(["python3", "cond_trainer.py", f"lo_{self.leavout}on{GPU_nb}{app}{('_'+str(self.n_reload_on_crash)) if self.n_reload_on_crash > 0 else ''}"])

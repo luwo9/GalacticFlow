@@ -85,7 +85,7 @@ def construct_MW_like_galaxy_leavout(M_dm_leavout):
 
 def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
     """
-    Simply returns the stellar mass as condition.
+    Simply returns the stellar mass as condition. For the use as cond_fn in choose_subset.
 
     Parameters
     ----------
@@ -106,6 +106,17 @@ def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
         Conditions of the galaxy, in this case the stellar mass.
     """
     return (M_star,)
+
+def cond_M_stars_2age_avZ(galaxy, N_star, M_star, M_dm_g):
+    """
+    Returns a condition consisting of the 4 values stellar mass, median age, 10th percentile age and mean metallicity.
+    For the full documentation of such a function see cond_M_stars.
+    """
+    tau50 = np.median(galaxy[:, 9])
+    tau10 = np.percentile(galaxy[:, 9], 10)
+    Z_av = np.mean(galaxy[:, 6])
+    
+    return (M_star, tau50, tau10, Z_av)
 
 #Functions used for data preperation in Data_to_flow
 def tanh_smoothing(x):
