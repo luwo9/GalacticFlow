@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import binned_statistic_2d
 import itertools
 
+import scipy.stats
+
 standard_zoomout = 1.2
 comp_names = "xyz"
 
@@ -308,7 +310,7 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
         if data_flow is not None:
             ax.hist(flow, bins=300, histtype="step", density=True)
         ax.set_xlabel(name)
-        ax.set_ylabel("count")
+        ax.set_ylabel("Probability density")
     
     plt.delaxes(axs2[11])
     plt.delaxes(axs2[10])
@@ -330,9 +332,17 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
             data_dict = dict(zip(names, data_true[:,::every]))
             hue = None
         
-        sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue=hue, diag_kind="kde", diag_kws ={"common_norm":False})
-        
-        plt.savefig(f"plots/Plot4{label}.{format_}", format=format_, dpi=dpi)
+        pairplot = sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue=hue, diag_kind="kde", diag_kws ={"common_norm":False}, plot_kws={"rasterized":True})
+        #Increase x,y label font size:
+        for ax in pairplot.fig.get_axes():
+            ax.set_xlabel(ax.get_xlabel(), fontsize=20)
+            ax.set_ylabel(ax.get_ylabel(), fontsize=20)
+        #Same for the hue legend font size
+        if hue is not None:
+            pairplot._legend.set_title(pairplot._legend.get_title().get_text(), prop={"size":20})
+            for t in pairplot._legend.texts:
+                t.set_fontsize(20)
+        plt.savefig(f"plots/Plot4{label}.{format_}", format=format_, dpi=int(dpi//2))
         plt.show()
 
 
@@ -711,7 +721,25 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
         Weather to use a global grid for all galaxies within a plot. If False, the grid is determined for each galaxy individually.
     
     """
-
+    #Check input
+    #Type
+    if type not in ["feh", "ofe", "N"]:
+        raise ValueError("type must be 'feh', 'ofe' or 'N'")
+    #Show
+    if show not in ["page", "all"]:
+        raise ValueError("show must be 'page' or 'all'")
+    #Scale
+    if scale not in [None, "lin", "log"]:
+        raise ValueError("scale must be None, 'lin' or 'log'")
+    #Color
+    if color not in ["global", "individual"]:
+        raise ValueError("color must be 'global' or 'individual'")
+    #Color_pass
+    if color_pass not in ["local", "global", "first"]:
+        raise ValueError("color_pass must be 'local', 'global' or 'first'")
+    #N_unit
+    if N_unit not in ["starsperbin", "starsperkpc", "massperkpc"]:
+        raise ValueError("N_unit must be 'starsperbin', 'starsperkpc' or 'massperkpc'")
 
     #Standard colormap
     if cmap == None:
@@ -787,9 +815,9 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
             if type == "N":
                 result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], None, statistic="count", bins=(x_bins, y_bins))
             elif type == "ofe":
-                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,8], statistic="mean", bins=(x_bins, y_bins))
+                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,8], statistic=stat_sign_mean, bins=(x_bins, y_bins))
             elif type == "feh":
-                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,7], statistic="mean", bins=(x_bins, y_bins))
+                result = binned_statistic_2d(galaxy[:,comps[0]], galaxy[:,comps[1]], galaxy[:,7], statistic=stat_sign_mean, bins=(x_bins, y_bins))
 
             result = list(result)
             #Filter out nan values
@@ -935,7 +963,7 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
 
             
             
-
+## Funcions belwo are not plots, but still evaluating the results.
 
     
     
