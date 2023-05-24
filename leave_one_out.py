@@ -3,8 +3,6 @@
 
 import flowcode
 import processing
-import res_flow_vis as visual
-import device_use
 import externalize as ext
 
 import torch
@@ -12,8 +10,6 @@ import numpy as np
 import subprocess
 import time
 import gc
-#For reloading modules
-import importlib
 
 
 ## Parameters
@@ -62,13 +58,6 @@ class leavout_model:
 
         device = f"cuda:{GPU_nb}"
 
-        with open("device_use.py", "w") as f:
-            f.write(f"device_use = \"{device}\"")
-
-        #Reload the modules, so that the device is changed
-        importlib.reload(device_use)
-        importlib.reload(flowcode)
-
         model = flowcode.NSFlow(24, 10, 4, flowcode.NSF_CL2, K=10, B=3, network=flowcode.MLP, network_args=(512,8,0.2))
         model = model.to(device)
 
@@ -92,8 +81,16 @@ class leavout_model:
         torch.save(model, "cond_trainer/model_cond_trainer.pth")
         np.save("cond_trainer/params_cond_trainer.npy", np.append(np.array([10,11,12,13]),np.array([n_epochs,init_lr,1024,gamma])))
         np.save("cond_trainer/filename_cond_trainer.npy", filename+app)
+        np.save("cond_trainer/loading_complete.npy", np.array([0]))
 
         process = subprocess.Popen(["python3", "cond_trainer.py", f"lo_{self.leavout}on{GPU_nb}{app}{('_'+str(self.n_reload_on_crash)) if self.n_reload_on_crash > 0 else ''}"])
+
+        #Check if loading in cond_trainer.py was completed and can safley be overwritten, throw error if not the case after 1 minute
+        for i in range(60):
+            if int(np.load("cond_trainer/loading_complete.npy")) == 1:
+                break
+            else:
+                time.sleep(1)
 
         self.process = process
         self.is_supposed_to_be_running = True

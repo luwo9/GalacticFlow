@@ -8,9 +8,12 @@ import device_use
 
 file_ext = sys.argv[1]
 train_data = torch.load("cond_trainer/data_cond_trainer.pth")
-model = torch.load("cond_trainer/model_cond_trainer.pth").to(device_use.device_use)
+model = torch.load("cond_trainer/model_cond_trainer.pth")
 train_parameters = np.load("cond_trainer/params_cond_trainer.npy")
 filename = str(np.load("cond_trainer/filename_cond_trainer.npy"))
+
+#Signal that loading is complete and the file can be overwritten safely
+np.save("cond_trainer/loading_complete.npy", np.array([1]))
 
 train_loss_saver = []
 

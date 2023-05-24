@@ -8,7 +8,12 @@ import time
 
 import device_use
 #Choose device
-device = device_use.device_use
+#device = device_use.device_use
+
+#Rework device managment:
+#Model should be fully moved to any desired device by calling model.to(device)
+#This means any tensors floating arround and manually moved to device should be covered by model.to(device)
+#I.e. taking the device of paramteter or being registered as buffer or simpl overwriting the to(device) method
 
 
 # MLP
@@ -36,7 +41,7 @@ class GLOW_conv(nn.Module):
     def __init__(self, n_dim):
         super().__init__()
         self.n_dim = n_dim
-        W_initialize = nn.init.orthogonal_(torch.randn(self.n_dim, self.n_dim).to(device))
+        W_initialize = nn.init.orthogonal_(torch.randn(self.n_dim, self.n_dim))
         #P, L_, U_ = torch.lu_unpack(*torch.linalg.lu_factor(W_initialize))
         #P, L_, U_ = torch.lu_unpack(*torch.lu(W_initialize))
         P, L_, U_ = torch.linalg.lu(W_initialize)
@@ -58,7 +63,7 @@ class GLOW_conv(nn.Module):
         
     def _get_W_and_ld(self):
         #Make sure the pieces stay in correct shape as in GLOW
-        L = torch.tril(self.L, diagonal=-1)+ torch.diag(torch.ones(self.n_dim).to(device))
+        L = torch.tril(self.L, diagonal=-1) + torch.diag(torch.ones(self.n_dim).to(self.L.device))
         U = torch.triu(self.U, diagonal=1)
         S = torch.diag(self.S)
         
@@ -371,10 +376,10 @@ class NSFlow(nn.Module):
 
         self.layers = nn.ModuleList(itertools.chain(*zip(conv_layers,coupling_layers)))
         
-        self.prior = torch.distributions.Normal(torch.zeros(dim_notcond).to(device), torch.ones(dim_notcond).to(device))
+        self.prior = torch.distributions.Normal(torch.zeros(dim_notcond), torch.ones(dim_notcond))
         
     def forward(self, x, x_cond):
-        logdet = torch.zeros(x.shape[0]).to(device)
+        logdet = torch.zeros(x.shape[0]).to(x.device)
         
         for layer in self.layers:
             ##Debug
@@ -388,7 +393,7 @@ class NSFlow(nn.Module):
         return x, logdet, prior_z_logprob
     
     def backward(self, x, x_cond):
-        logdet = torch.zeros(x.shape[0]).to(device)
+        logdet = torch.zeros(x.shape[0]).to(x.device)
         
         for layer in reversed(self.layers):
             x, logdet_temp = layer.backward(x, x_cond)
@@ -398,10 +403,17 @@ class NSFlow(nn.Module):
     
     def sample_Flow(self, number, x_cond):
         return self.backward(self.prior.sample(torch.Size((number,))), x_cond)[0]
+    
+    def to(self, device):
+        super().to(device)
+        self.prior = torch.distributions.Normal(torch.zeros(self.dim).to(device), torch.ones(self.dim).to(device))
+        return self
 
 
 
 def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, gamma=0.998, give_textfile_info=False, print_fn=None, **print_fn_kwargs):
+    
+    device = flow_obj.parameters().__next__().device
     #Infos to printout
     
     n_steps = data.shape[0]*epochs//batch_size+1
