@@ -3,6 +3,7 @@ import torch
 import glob
 from sklearn.decomposition import PCA
 import externalize as ext
+import subprocess
 
 
 def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
@@ -35,6 +36,52 @@ def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
     #Also rotate velocities
     galaxy_rot[:,3:5] = galaxy_rot[:,3:5]@rot_mat
     return galaxy_rot
+
+
+#Function to operate ext_sample.py by calling multiple versions of it with subprocess.Popen, allowing for parallel sampling
+
+def parallel_sample(model, condition_or_n, GPU_nbs, split_size=300000):
+    n_GPUs = len(GPU_nbs)
+    if isinstance(condition_or_n, int):
+        condition_or_n_iter = [condition_or_n//n_GPUs]*n_GPUs
+        condition_or_n_iter[-1] += condition_or_n%n_GPUs
+    else:
+        condition_or_n_iter = torch.split(condition_or_n, -(condition_or_n.shape[0]//-n_GPUs))
+    
+    #Save model and data to be used by the subprocesses
+    torch.save(model, "ext_sampler/model_ext_sampler.pth")
+    for i, condition_or_n in enumerate(condition_or_n_iter):
+        torch.save(condition_or_n, f"ext_sampler/data_{i}.pth")
+
+    np.save("ext_sampler/split_size_ext_sampler.npy", split_size)
+
+
+    processes = []
+
+    for i, (GPU, condition_or_n) in enumerate(zip(GPU_nbs, condition_or_n_iter)):
+        process = subprocess.Popen(["python3", "ext_sample.py", f"{i}", f"{GPU}"])
+        processes.append(process)
+
+    for process in processes:
+        process.wait()
+    
+    for process in processes:
+        #If one process had an error, throw an error
+        if process.poll() != 0:
+            raise RuntimeError("One of the processes had an error")
+    
+    sample = []
+    for i in range(n_GPUs):
+        sample.append(torch.load(f"ext_sampler/data_{i}.pth"))
+        subprocess.Popen(["rm", f"ext_sampler/data_{i}.pth"]).wait()
+
+    sample = torch.vstack(sample)
+
+    #Delete the model and the split_size file
+    subprocess.Popen(["rm", "ext_sampler/model_ext_sampler.pth"]).wait()
+    subprocess.Popen(["rm", "ext_sampler/split_size_ext_sampler.npy"]).wait()
+
+    return sample
 
 
 
@@ -493,10 +540,10 @@ class Processor_cond():
             Data[:,inds] = fn(Data[:,inds])
         return Data.numpy()
 
-    def sample_Conditional(self, model, cond_indices, Condition, device="cuda", split_size=300000):
+    def sample_Conditional(self, model, cond_indices, Condition, split_size=300000, GPUs=None):
         """
         Samples the conditional flow using a given condition. The condition is transformed to the format used for training the flow and then the flow is sampled.
-        The sampling is done on the GPU in batches of split_size, because the GPU memory is limited.
+        The sampling is done on the GPU in batches of split_size, because the GPU memory is limited. Allows for parallel sampling on multiple GPUs.
 
         Parameters
         ----------
@@ -507,10 +554,10 @@ class Processor_cond():
             Array containing the indices of the components of the condition.
         Condition : array
             Array containing the condition.
-        device : string (optional), default: "cuda"
-            The device the model is on and the sampling is done on.
         split_size : int (optional), default: 300000
             The size of the batches the sampling is done in.
+        GPUs : list of ints (optional), default: None
+            List of the GPUs to use for sampling. If None, use device of model.
         
         Returns
         -------
@@ -518,6 +565,10 @@ class Processor_cond():
         sample : array
             Array containing the sample of the flow for the given condition.
         """
+
+        #Device the model is on
+        device = model.parameters().__next__().device
+
         #Format: Contition is (N,n_cond) array cond_indices has length n_cond
         Cond_flow = np.copy(Condition)
         
@@ -531,25 +582,28 @@ class Processor_cond():
 
         Cond_flow = torch.from_numpy(Cond_flow).type(torch.float)
 
-        #Evaluate the model, use only stacks of split_size because GPU memory is limited
-        #Here e.g. sampling 3*10^7 points with 10 components each, with 3*10^7 points already occupied by the condition + model on GPU needs more than the 10GB available
-        model.eval()
-        sample = []
-        with torch.inference_mode():
-            for split in torch.split(Cond_flow, split_size):
-                res = (model.sample_Flow(split.shape[0], split.to(device))).cpu() #Unsqueezed input
-                sample.append(res)
-        sample = torch.vstack(sample)
+        if GPUs is None:   
+            #Evaluate the model, use only stacks of split_size because GPU memory is limited
+            #Here e.g. sampling 3*10^7 points with 10 components each, with 3*10^7 points already occupied by the condition + model on GPU needs more than the 10GB available
+            model.eval()
+            sample = []
+            with torch.inference_mode():
+                for split in torch.split(Cond_flow, split_size):
+                    res = (model.sample_Flow(split.shape[0], split.to(device))).cpu() #Unsqueezed input
+                    sample.append(res)
+            sample = torch.vstack(sample)
+        else:
+            sample = parallel_sample(model, Cond_flow, GPUs, split_size=split_size)
 
         return torch.hstack((sample, torch.from_numpy(Condition).type(torch.float)))
     
     #Function to correctly evaluate the pdf of the flow
-    def log_prob(self, model, data, cond_indices, device="cuda", split_size=300000):
+    def log_prob(self, model, data, cond_indices, split_size=300000):
         """
         Evaluates the log probability of the flow for a given data sample.
         The evaluation is done on the GPU in batches of split_size, because the GPU memory is limited.
         This is to take into account that any scaling of the date prior to training needs to be respected in the probability density function.
-        Uses the (log) Jacobian determinant of the transformation functions specified in Data_to_flow (not implemented yet).
+        Uses the (log) Jacobian determinant of the transformation functions specified in Data_to_flow (not implemented yet). Uses the GPU the model is on.
 
         Parameters
         ----------
@@ -560,8 +614,6 @@ class Processor_cond():
             Array containing the data sample with conditions.
         cond_indices : array
             Array containing the indices of the components of the condition.
-        device : string (optional), default: "cuda"
-            The device the model is on and the evaluation is done on.
         split_size : int (optional), default: 300000
             The size of the batches the evaluation is done in.
         
@@ -574,6 +626,8 @@ class Processor_cond():
         if self.trf_logdet is None:
             raise ValueError("Derivatives not specified in Data_to_flow, cannot evaluate log_prob")
         
+        device = model.parameters().__next__().device
+
         mask_cond = np.isin(np.arange(data.shape[1]), cond_indices)
         #Format: data is (N,n) array
         data_flow = np.copy(data)
