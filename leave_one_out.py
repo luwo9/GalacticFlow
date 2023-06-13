@@ -36,11 +36,11 @@ Data_sub_v, N_stars_sub_v, M_stars_sub_v, M_dm_sub_v = mpc.choose_subset(Data_co
 
 
 #The GPUs to use will be proceseed to "cuda:GPU_nb"
-GPU_nbs = np.array([2,3,4,5,6,7,8,9])
+GPU_nbs = np.array([7,8,9])
 
 n_GPU_use = len(GPU_nbs)
 
-leaveouts = [None,1,2,4,5,15] #[None,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+leaveouts = [0,11,14]#[None,1,2,4,5,15] #[None,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
 
 
 class leavout_model:
@@ -56,13 +56,13 @@ class leavout_model:
         leavout_fn = ext.construct_MW_like_galaxy_leavout(M_dm_sub_v[self.leavout] if self.leavout is not None else -1)
         Data_sub, N_stars_sub, M_stars_sub, M_dm_sub = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = leavout_fn, cond_fn=ext.cond_M_stars_2age_avZ)
 
-        device = f"cuda:{GPU_nb}"
+        #device = f"cuda:{GPU_nb}"
 
         model = flowcode.NSFlow(24, 10, 4, flowcode.NSF_CL2, K=10, B=3, network=flowcode.MLP, network_args=(512,8,0.2))
-        model = model.to(device)
+        #model = model.to(device)
 
         if retrain:
-            model.load_state_dict(torch.load(f"saves/{filename}.pth"))
+            model.load_state_dict(torch.load(f"saves/{filename}.pth", map_location="cpu"))
         
         Data_flow = mpc.Data_to_flow(mpc.diststack(Data_sub), (np.log10,), (np.array([10]),), (lambda x: 10**x,))
 
@@ -83,7 +83,7 @@ class leavout_model:
         np.save("cond_trainer/filename_cond_trainer.npy", filename+app)
         np.save("cond_trainer/loading_complete.npy", np.array([0]))
 
-        process = subprocess.Popen(["python3", "cond_trainer.py", f"lo_{self.leavout}on{GPU_nb}{app}{('_'+str(self.n_reload_on_crash)) if self.n_reload_on_crash > 0 else ''}"])
+        process = subprocess.Popen(["python3", "cond_trainer.py", f"lo_{self.leavout}on{GPU_nb}{app}{('_'+str(self.n_reload_on_crash)) if self.n_reload_on_crash > 0 else ''}", str(GPU_nb)])
 
         #Check if loading in cond_trainer.py was completed and can safley be overwritten, throw error if not the case after 1 minute
         for i in range(60):

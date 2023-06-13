@@ -4,11 +4,11 @@ import flowcode
 import time
 import sys
 
-import device_use
 
 file_ext = sys.argv[1]
 train_data = torch.load("cond_trainer/data_cond_trainer.pth")
-model = torch.load("cond_trainer/model_cond_trainer.pth")
+device_specified = "cuda:" + sys.argv[2] if len(sys.argv) > 2 else None #GPU is either specified or not, if not model will be loaded on the device it was saved on.
+model = torch.load("cond_trainer/model_cond_trainer.pth", map_location=device_specified)
 train_parameters = np.load("cond_trainer/params_cond_trainer.npy")
 filename = str(np.load("cond_trainer/filename_cond_trainer.npy"))
 
