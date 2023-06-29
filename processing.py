@@ -676,8 +676,5 @@ class Processor_cond():
         
         log_prob = torch.hstack(log_prob)
 
-        return log_prob
+        return log_prob.numpy()
 
-
-        
-        

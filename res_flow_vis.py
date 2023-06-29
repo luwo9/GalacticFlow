@@ -11,6 +11,108 @@ import scipy.stats
 standard_zoomout = 1.2
 comp_names = "xyz"
 
+#Corner plot like in get_result_plots, but with a 2D histogram instead of scatter plot
+#Flow is then right top corner, data is left bottom corner. Otherwise the plot is the same
+#This is to be used as alternative inside get_result_plots as 4th plot
+x_and_v = list(itertools.chain(itertools.product(range(3), range(3)), itertools.product(range(3,6), range(3,6))))
+def cornerplot_hist(data_true, data_flow, names, color="individual", color_pass="local", grid_pass=False, perserve_aspect_grid=x_and_v):
+    """
+    Make a corner plot of the data and flow, with KDE plots on the diagonal and 2D histograms on the off-diagonal. One side of the diagonal is data, the other is flow.
+
+    Parameters
+    ----------
+
+    data_true : np.ndarray
+        The (true) galaxy data, shape (N, n)
+
+    data_flow : np.ndarray
+        The flow sample for the galaxy, shape (N, n)
+    
+    names : list of str
+        The names of the components of the data for the axis labels. Must be of length n.
+
+    color : {"individual", "global"}, optional, default: "individual"
+        Whether the plots in one corner should be colored individually or with the same color scale.
+    
+    color_pass : {"first", "local", "global"}, optional, default: "local"
+        Whether the color scale should be set by the data ("first"), the data or flow in the repsective corner ("local") or the data and flow in the whole plot ("global").
+
+    grid_pass : bool, optional, default: False
+        Wheather to use the same grid used for the data for the flow as well, or recalculte the grid for the flow.
+
+    perserve_aspect_grid : list of tuples of ints, optional, default: x_and_v
+        The cornerplots for which an aspect ratio should be preserved. Each tuple is a pair of indices for the components of the respective plot. E.g. (0,1) is the plot for x and y.
+    """
+    raise NotImplementedError("This function is not yet implemented")
+    #Check all inputs
+    if color not in ["individual", "global"]:
+        raise ValueError("color must be 'individual' or 'global'")
+    if color_pass not in ["first", "local", "global"]:
+        raise ValueError("color_pass must be 'first', 'local' or 'global'")
+    
+    #Highlight possibly bad choices
+    if color == "global":
+        print("Warning: global color scale may not be a good choice for corner plots")
+    if grid_pass:
+        print("Warning: grid_pass may not be a good choice for corner plots")
+
+    #Get the number of components
+    n = data_true.shape[1]
+
+    #First calculate and store the results in a 2D list
+    #The first index is the row, the second the column
+
+    Results = [[None for _ in range(n)] for _ in range(n)]
+
+    #Loop over all components
+    sz = standard_zoomout
+    for row, col in itertools.product(range(n), range(n)):
+        data_y = data_true[:, row]
+        data_x = data_true[:, col]
+        flow_y = data_flow[:, row]
+        flow_x = data_flow[:, col]
+
+        #Decide what plot we are dealing with
+        if row == col:
+            #Diagonal -> KDE plot
+            #Calculate the KDE for the data and the flow
+            kde_data = scipy.stats.gaussian_kde(data_y)
+            kde_flow = scipy.stats.gaussian_kde(flow_y)
+            #(Note KDE will not share y axis, but that is not a problem)
+            #Calculate the x values for the plot
+            n_points_kde = 500
+            x_kde_data = np.linspace(np.min(data_y)*sz, np.max(data_y)*sz, n_points_kde)
+            x_kde_flow = np.linspace(np.min(flow_y)*sz, np.max(flow_y)*sz, n_points_kde)
+
+            #Calculate the y values for the plot
+            y_kde_data = kde_data(x_kde_data)
+            y_kde_flow = kde_flow(x_kde_flow)
+
+            #Save the results
+            Results[row][col] = {"x_data": x_kde_data, "y_data": y_kde_data, "x_flow": x_kde_flow, "y_flow": y_kde_flow}
+
+        elif row > col:
+            #Lower triangle -> 2D histogram of data
+            #But we might already calculate flow here (the row <-> col case) and use the dat results of e.g. the grid if desired
+
+            #Start with the data
+
+            #Calculate the grid
+            n_histo_bins = 100
+
+            max
+
+
+
+
+                
+
+
+
+
+
+
+
 def stat_sign_mean(x):
     """
     Function calculating the mean of the data, if the data is statistically significant i.e. if there are enough data points.
@@ -319,17 +421,19 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
     
     #Cornerplot
     if True:
+        rng = np.random.default_rng()
+        data_perm = rng.permutation(data_true, axis=1)
         if data_flow is not None:
             every = data_flow.shape[1]//1000
             every = 1 if every == 0 else every
-            data_corner = np.hstack((data_true[:,::every], data_flow[:,::every]))
+            data_corner = np.hstack((data_perm[:,::every], data_flow[:,::every]))
             data_dict = dict(zip(names, data_corner))
             hue = "Legend:"
-            data_dict[hue] = np.append(np.full(data_true[:,::every].shape[1],"Data"),np.full(data_flow[:,::every].shape[1],"Flow"))
+            data_dict[hue] = np.append(np.full(data_perm[:,::every].shape[1],"Data"),np.full(data_flow[:,::every].shape[1],"Flow"))
         else:
-            every = data_true.shape[1]//1000
+            every = data_perm.shape[1]//1000
             every = 1 if every == 0 else every
-            data_dict = dict(zip(names, data_true[:,::every]))
+            data_dict = dict(zip(names, data_perm[:,::every]))
             hue = None
         
         pairplot = sns.pairplot(pd.DataFrame(data_dict), corner=True, aspect=1, hue=hue, diag_kind="kde", diag_kws ={"common_norm":False}, plot_kws={"rasterized":True})
@@ -414,7 +518,7 @@ def xylim(Galaxies, xylim_array, comps=(0,1)):
     return Galaxies_out
 
 #How many galaxies to plot per page in the plot_conditional function, if a page is plotted. ormat: (n_rows, n_columns)
-page_plot_layout = (4,3)#(10, 7) #(8, 6)
+page_plot_layout = (10,7)#(4,3)#(10, 7) #(8, 6)
 #How many galaxyies to plot per row in the plot_conditional function, if all galaxies are plotted.
 n_row_all = 4
 
@@ -603,7 +707,7 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
 #Histogram for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram.
 #Coloring is done by sampling from a colormap in log, and the colorbar is placed at the bottom of the figure.
 
-def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridis", log=False):
+def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridis", log=False, manual_cut_dict=None):
     """
     Plots histograms for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram, respectivley.
 
@@ -622,6 +726,10 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
         Colormap to be sampled to color code the masses.
     log : bool, optional, default: False
         Wheather to plot the histogram in log scale.
+    manual_cut_dict : dict, optional, default: None
+        Dictionary containing the manual cuts to be applied to the data.
+        The keys are the names of the properties, the values are tuples containing the lower and upper bound of the cut.
+        This is for a better visual appearance of the plots, if tails are too long.
 
     Returns
     -------
@@ -631,6 +739,14 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
     -----
     For age only a sixth of the given bins is used to reduce noise.
     """
+
+    if manual_cut_dict is None:
+        manual_cut_dict = {}
+
+    valid_keys = ["r", "z", "v", "Z", "feh", "ofe", "age"]
+    if np.isin(list(manual_cut_dict.keys()), valid_keys, invert=True).any():
+        raise ValueError("Invalid key in manual_cut_dict. Keys must be r, z, v, Z, feh, ofe or age.")
+
     colormap = matplotlib.colormaps[cmap]
     c_norm = matplotlib.colors.LogNorm(vmin=Massses.min(), vmax=Massses.max())
     scalar_map = matplotlib.cm.ScalarMappable(norm=c_norm, cmap=colormap)
@@ -643,7 +759,7 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
     axs = axs.ravel()
 
     for galaxy, mass in zip(Galaxies, Massses):
-        for i, (ax, name) in enumerate(zip(axs, plottables)):
+        for i, (ax, name, quantity) in enumerate(zip(axs, plottables, valid_keys)):
             if i==0:
                 #Get cylindrical radius
                 plot = np.sqrt(np.sum(galaxy[:,:2]**2, axis=1))
@@ -656,11 +772,16 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
             elif i>=3:
                 ind_plot = i+3
                 plot = galaxy[:,ind_plot]
+
+            #Apply manual cuts
+            if quantity in manual_cut_dict.keys():
+                lower, upper = manual_cut_dict[quantity]
+                plot = plot[(plot>=lower) & (plot<=upper)]
                 
             
             ax.hist(plot, bins=int(bins/6) if i==6 else bins, color=scalar_map.to_rgba(mass), density=True, histtype="step", log=log)
             ax.set_xlabel(name)
-            ax.set_ylabel("Density")
+            ax.set_ylabel("Probability density")
     for i, ax in enumerate(axs):
         if i>=len(plottables):
             fig.delaxes(ax)
@@ -963,9 +1084,7 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
 
             
             
-## Funcions belwo are not plots, but still evaluating the results.
 
-    
     
 
 
