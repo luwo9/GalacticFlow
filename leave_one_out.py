@@ -10,6 +10,7 @@ import numpy as np
 import subprocess
 import time
 import gc
+import sys
 
 
 ## Parameters
@@ -22,7 +23,7 @@ retrain = False
 n_max_reload_on_crash = 2
 
 #Base filename for the models savefiles
-base_filename = "leavout_MttZ_MWs_CL2_24_10_512_8_lo"
+base_filename = "leavout_MttZ_all_CL2_24_10_512_8_lo"
 
 
 #Initiate a processor to handle data
@@ -32,15 +33,15 @@ Data, N_stars, M_stars, M_dm = mpc.get_data("all_sims")
 
 Data_const, N_stars_const, M_stars_const, M_dm_const = mpc.constraindata(Data, M_dm)
 
-Data_sub_v, N_stars_sub_v, M_stars_sub_v, M_dm_sub_v = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = ext.MW_like_galaxy, cond_fn=ext.cond_M_stars_2age_avZ)
+Data_sub_v, N_stars_sub_v, M_stars_sub_v, M_dm_sub_v = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = ext.all_galaxies, cond_fn=ext.cond_M_stars_2age_avZ)
 
 
 #The GPUs to use will be proceseed to "cuda:GPU_nb"
-GPU_nbs = np.array([7,8,9])
+GPU_nbs = np.array([8,9])
 
 n_GPU_use = len(GPU_nbs)
 
-leaveouts = [0,11,14]#[None,1,2,4,5,15] #[None,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+leaveouts = [[1, 26, 72, 47, 85],[66, 20, 88, 48,  5]]#[0,11,14]#[None,1,2,4,5,15] #[None,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
 
 
 class leavout_model:
@@ -53,8 +54,9 @@ class leavout_model:
     def start(self, GPU_nb):
         filename = base_filename + f"{self.leavout}"
         #Check if self.leavout is None, then leave out nothing
-        leavout_fn = ext.construct_MW_like_galaxy_leavout(M_dm_sub_v[self.leavout] if self.leavout is not None else -1)
+        leavout_fn = ext.construct_all_galaxies_leavout(M_dm_sub_v[self.leavout] if self.leavout is not None else -1)
         Data_sub, N_stars_sub, M_stars_sub, M_dm_sub = mpc.choose_subset(Data_const, N_stars_const, M_stars_const, M_dm_const, use_fn = leavout_fn, cond_fn=ext.cond_M_stars_2age_avZ)
+        sys.stdout.flush()
 
         #device = f"cuda:{GPU_nb}"
 
@@ -91,6 +93,9 @@ class leavout_model:
                 break
             else:
                 time.sleep(1)
+        
+        if int(np.load("cond_trainer/loading_complete.npy")) == 0:
+            raise RuntimeError("Loading of data and model in cond_trainer.py was not completed in time")
 
         self.process = process
         self.is_supposed_to_be_running = True

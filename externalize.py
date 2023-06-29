@@ -81,6 +81,32 @@ def construct_MW_like_galaxy_leavout(M_dm_leavout):
     return MW_like_galaxy_leavout
 
 
+def all_galaxies(galaxy, N_star, M_star, M_dm_g):
+    """
+    Selects all galaxies.
+    See MW_like_galaxy for more information.
+    """
+    return True
+
+
+def construct_all_galaxies_leavout(M_dm_leavout):
+    """
+    Constructs a function that selects all galaxies, but forbids galaxies with selected dark matter masses.
+    See construct_MW_like_galaxy_leavout for more information.
+    """
+    def all_galaxies_leavout(galaxy, N_star, M_star, M_dm_g):
+        """
+        Selects all galaxies, but forbids galaxies with selected dark matter masses.
+        See MW_like_galaxy_leavout for more information.
+        """
+        #Test if has forbidden dm mass
+        is_included = np.isin(M_dm_g, M_dm_leavout, invert=True).item()
+
+        return is_included
+    
+    return all_galaxies_leavout
+
+
 #Condition functions, use intended as cond_fn in choose_subset
 
 def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
