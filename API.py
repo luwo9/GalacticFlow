@@ -295,3 +295,181 @@ class GalacticFlow():
         galaxy = self.general_sample(np.tile(parameters, (N_stars,1)), split_size=split_size, GPUs=GPUs)
 
         return galaxy
+    
+    def general_pdf(self, X, split_size=300000, GPUs=None):
+        """
+        Evaluate the log probability density function at a given set of points.
+
+        Parameters
+        ----------
+        X : array
+            Points on which to evaluate the pdf. Must be of shape (N, self.n_dim+self.n_cond), where N is the number of points, n_dim the dimension of the data and n_cond the number of conditions.
+        split_size : int, (optional), default: 300000
+            A technical parameter. The sample is queued in chunks of size split_size for sampling. This is done to avoid memory errors on GPUs, if the sample is too large.
+        GPUs : list of ints, (optional), default: None
+            List of GPUs to use for sampling in parallel. If None, use device the model is currently on. The integers in the list correspond to the GPU ids.
+        
+        Returns
+        -------
+        pdf : array
+            The log probability density function evaluated at the given points. Has shape (N,).    
+        
+        Examples
+        --------
+
+        >>> use_gpus = [0,1,2,3]
+        >>> model.n_cond
+        3
+        >>> model.n_dim
+        10
+        >>> Conditions = np.tile(np.array([1,2.2,3]), (4,1))
+        >>> Data = np.tile(np.array([1,2,3,4,2,6,5,3.5,9,1]), (4,1))
+        >>> X = np.concatenate((Data, Conditions), axis=1)
+        >>> pdf = model.general_pdf(X, GPUs=use_gpus)
+        >>> pdf.shape
+        (4,)
+        >>> pdf
+        array([-1.2,-1.5,1.8,-1.9])
+        """
+        if GPUs is not None:
+            print("Warning: Multiple GPU support not implemented yet. Using current device.")
+        pdf = self.processor.log_prob(self.flow, X, self.cond_inds, split_size=split_size)
+
+        return pdf
+    
+    def pdf_galaxy(self, galaxy, parameters, split_size=300000, GPUs=None):
+        """
+        Evaluate the log probability density function for a galaxy with a given set of parameters.
+        This is a userfrienldy way to evaluate the pdf.
+
+        Parameters
+        ----------
+
+        galaxy : array
+            The points on which to evaluate the pdf. Must be of shape (N, self.n_dim), where N is the number of points and n_dim the dimension of the data.
+        parameters : array
+            The parameters of the galaxy to evaluate the pdf for. Must be of shape (self.n_cond,), where n_cond is the number of conditions.
+        split_size : int, (optional), default: 300000
+            A technical parameter. The sample is queued in chunks of size split_size for sampling. This is done to avoid memory errors on GPUs, if the sample is too large.
+        GPUs : list of ints, (optional), default: None
+            List of GPUs to use for sampling in parallel. If None, use device the model is currently on. The integers in the list correspond to the GPU ids.
+        
+        Returns
+        -------
+        pdf : array
+            The log probability density function evaluated at the given points. Has shape (N,).
+        
+        Examples
+        --------
+
+        >>> use_gpus = [0,1,2,3]
+        #Model is conditional in M_star and tau50
+        >>> model.n_cond
+        2
+        #Model is learnt on 10D data space (x,y,z,vx,...)
+        >>> model.n_dim
+        10
+        #Sample a galaxy with total stellar mass of 10^10 M_sun and tau50 of 6 Gyr
+        >>> parameters = np.array([10^10,6])
+        #Evaluate the pdf for this galaxy
+        >>> galaxy = np.array([[0.,0.5,1.,0.,2.5,0.,0.,10.5,1000.,0.],[1.,2.5,1.,0.5,2.5,10.,0.,10.5,150.,0.]])
+        >>> pdf = model.pdf_galaxy(galaxy, parameters, GPUs=use_gpus)
+        >>> pdf.shape
+        (2,)
+        >>> pdf
+        array([10,-3])
+        >>> galaxy = model.sample_galaxy(10^6, parameters, GPUs=use_gpus)
+        >>> pdf = model.pdf_galaxy(galaxy, parameters, GPUs=use_gpus)
+        >>> pdf.shape
+        (10^6,)
+        >>> pdf
+        array([10,-3,0.5,...])
+        """
+
+        pdf = self.general_pdf(np.concatenate((galaxy, np.tile(parameters, (galaxy.shape[0],1))), axis=1), split_size=split_size, GPUs=GPUs)
+
+        return pdf
+    
+    def save(self, path, ensure_trained=True):
+        """
+        Save this model to a file. This will not just save the pytorch model, but the whole state of the GalacticFlow model/object see Notes.
+        This file will later be used to load again at initialization.
+
+        Parameters
+        ----------
+
+        path : str
+            The path to save the model to.
+        ensure_trained : bool, (optional), default: True
+            If True only allow saving models that make sense to be saved (i.e. trained/prepared at some point).
+            If False the model will be saved even if never trained or prepared.
+            This is not recomended, because this state is essentially given by the definition of the model, such that there is no need really to save this state.
+        
+        Notes
+        -----
+        This function will save information like the conditional indices chosen or the processing related quantities that are required to load the model again.
+        More precisely, the following information is saved:
+        - The definition of the model  that has beed used to first initialize the model. (Dimensions, number of conditions, etc.)
+        - The state_dict of the pytorch model (normalizing flow).
+        - The state of the processor (mu and std), that otherwise would have to be computed by self.prepare() before inference.
+        - The loss history of the model (including the training time).
+
+        Examples
+
+        >>> model.n_cond
+        2
+        >>> model.n_dim
+        10
+        >>> model.save("my_model.pth")
+        >>> model = GalacticFlow("my_model.pth")
+        >>> model.n_cond
+        2
+        >>> model.n_dim
+        10
+        """
+        if self.loss_history == []:
+            untrained = True
+        else:
+            untrained = False
+        
+        if hasattr(self.processor, "mu"):
+            unprepared = False
+        else:
+            unprepared = True
+
+        if ensure_trained:
+            if unprepared:
+                raise RuntimeError("Model has never been prepared. Cannot save. If you want to save anyway, set ensure_trained=False.")
+            elif untrained:
+                raise RuntimeError("Model has never been trained. Cannot save. If you want to save anyway, set ensure_trained=False.")
+            else:
+                #Everything is okay
+                mu = self.processor.mu
+                std = self.processor.std
+        else:
+            if unprepared:
+                print("Warning: Model has never been prepared. Saving anyway with mu=None and std=None.")
+                mu = None
+                std = None
+                #Setting to None will ensure that it is saved, but can not be used for inference by accident
+                #But this may not be catched in inference if a custom Processor Class does ,e.g., define mu and std as 0 and 1 in __init__... maybe some better way to do this?
+            elif untrained:
+                print("Warning: Model has never been trained. Saving anyway.")
+                mu = self.processor.mu
+                std = self.processor.std
+            else:
+                #Everything is okay
+                mu = self.processor.mu
+                std = self.processor.std
+
+        #Use definition of model to save + extra keywords (see __init__)
+        save_dict = self.definition.copy()
+
+        save_dict["mean"] = mu
+        save_dict["std"] = std
+        #watch flow's device? but loading does already so maybe not that bad
+        save_dict["flow_dict"] = self.flow.state_dict()
+        save_dict["loss_history"] = self.loss_history
+
+        torch.save(save_dict, path)
+
