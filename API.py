@@ -11,6 +11,7 @@ import flowcode
 import processing
 import externalize as ext
 import time
+import os
 func_handle ={
     "Processor_cond": processing.Processor_cond,
     "Processor": processing.Processor,
@@ -36,6 +37,62 @@ def _handle_func(func):
         return func
 
 class GalacticFlow():
+    """
+    Class that allows easily working with the models, by providing a simple and clear interface, while only sacrificing very little flexibility compared to the base workflow.
+    An object of this class represents the notion of a GalacticFlow model, that has a given architecture, is or was trained on a certain dataset etc.
+    Thus, all parameters that are specific to this model must be defined when creating the object. It can then be trained, saved, loaded, sampled from etc. all with the call of a single method.
+
+    The class is meant to be used in the following way:
+    1. Create an object of this class, where either:
+        a) The definition is given as a dict of dicts, that contains all the information needed to define the model. (If a new model is to be tested)
+        b) A file path to an already saved (abstract) model is given. (If a model is just to sampled, or retrained etc.)
+    2. Call the desired method on the object. (E.g. train, sample, evaluate_pdf etc.)
+    3. Save this object by simly calling the save method. Without any further information this can then be used for 1. b) again.
+
+    Parameters
+    ----------
+
+    definition: dict of dicts or str
+        The definition of the model, containing all information, either as a dict of dicts or a file path to a saved (abstract) model. See below for details.
+    safe_mode: bool, (optional), default: True
+        If True, the model is loaded without the use of pickle (load with weights_only=True).
+        If False, arbitrary functions may be saved and loaded, but it comes with the usual risks of using pickle.
+
+    Methods
+    -------
+
+    prepare(defintion, safe_mode=True):
+        Does the advanced preparing, i.e., preparing for training. Loads and preprocesses the Data by working with the processor.
+        Is called automatically by train, but can be called manually if desired.
+    train(epochs, init_lr, batch_size, gamma, device):
+        Trains the model for the given number of epochs, with the given learning rate, batch size and gamma on the given device.
+        Keeps track of the loss and it together with the elapsed time is saved in the model. Calls prepare if not already done.
+    cond_trainer_export(epochs, init_lr, batch_size, gamma, filename):
+        Exports the data for training with the external cond_trainer.py script, that may be used for training with multiple GPUs in some cases.
+        The data is saved in the given filename.
+    general_sample(Condition, split_size=300000, GPUs=None):
+        Samples from the model for the given condition, using the GPUs specified.
+    sample_galaxy(self, N_stars, parameters, split_size=300000, GPUs=None):
+        More simpler/physical version of general_sample, that samples a galaxy given by defined parameters. Samples as many stars as specified.
+    general_pdf(self, X, split_size=300000, GPUs=None):
+        Evaluates the pdf of the model for the given data X, using the GPUs specified.
+    pdf_galaxy(self, galaxy, parameters, split_size=300000, GPUs=None)
+        More simpler/physical version of general_pdf, that evaluates the pdf of a galaxy given by defined parameters.
+    save(self, path, ensure_trained=True):
+        Saves the whole GalacticFlow model to a given path.
+    
+    Attributes
+    ----------
+
+
+    Definition of a model
+    ---------------------
+
+
+
+
+    
+    """
     def __init__(self, definition, safe_mode=True):
         #Definition is a dict of dicts that contains all the information needed to define the model or a file path to a saved (abstract) model
         #safe_mode = true means in case of a file path that it is loaded without the use of pickle (load with weights_only=True).
@@ -68,12 +125,16 @@ class GalacticFlow():
         self.cond_inds = definition["cond_inds"].numpy()
 
         #Create flow model
-        self.flow = flowcode.NSFlow(**definition["flow_hyper"])
+        flow_def = definition["flow_hyper"].copy()
+        flow_def["CL"] = _handle_func(flow_def["CL"])
+        flow_def["network"] = _handle_func(flow_def["network"])
+        flow_def["network_args"] = (int(flow_def["network_args"][0]), int(flow_def["network_args"][1]), float(flow_def["network_args"][2]))
+        self.flow = flowcode.NSFlow(**flow_def)
 
         #If the model is loaded from file recover  model + relavant processor attributes
         if self.is_loaded:
-            self.processor.std = definition["std"]
-            self.processor.mu = definition["mean"]
+            self.processor.std = definition["std"].numpy() if definition["std"] is not None else None
+            self.processor.mu = definition["mean"].numpy() if definition["mean"] is not None else None
             self.processor.trf_fn = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["transformation_functions"])
             self.processor.trf_ind = tuple(tensor.numpy() for tensor in definition["data_prep_args"]["transformation_indices"])
             self.processor.trf_fn_inv = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["inverse_transformations"])
@@ -84,7 +145,7 @@ class GalacticFlow():
 
         #Some important attributes
         self.leavout_indices = definition["subset_params"]["leavout_indices"]
-        self.loss_history = definition["loss_history"] if "loss_history" in definition else []
+        self.loss_history = definition["loss_history"].numpy() if "loss_history" in definition else []
         self.n_dim = definition["flow_hyper"]["dim_notcond"]
         self.n_cond = definition["flow_hyper"]["dim_cond"]
         #Save definition
@@ -161,6 +222,7 @@ class GalacticFlow():
 
         #Move to device
         self.flow.to(device)
+        self.flow.train()
         #Train
         loss_history = []
         start = time.perf_counter()
@@ -191,19 +253,42 @@ class GalacticFlow():
         gamma : float
             Learning rate decay factor.
         filename : str
-            Filneame cond trainer will save the model to.
+            Filename cond trainer will save the model to. Interpret this as a tag used to later import the pytorch model back into this model.
         """
         #Check if model is prepared
         if not self.is_prepared:
             print("Warning: Model not prepared, preparing it now.")
             self.prepare()
 
+        self.flow.train()
         #Save cond_trainer files
         torch.save(self.Data_flow, "cond_trainer/data_cond_trainer.pth")
         torch.save(self.flow, "cond_trainer/model_cond_trainer.pth")
         np.save("cond_trainer/params_cond_trainer.npy", np.append(self.cond_inds,np.array([epochs,init_lr,batch_size,gamma])))
         np.save("cond_trainer/filename_cond_trainer.npy", filename)
         np.save("cond_trainer/loading_complete.npy", np.array([0]))
+
+    def cond_trainer_import(self, filename):
+        """
+        Import the model that was trained in the background with cond_trainer.py. Loaded pytorch file will be deleted(!), as the model is then saved in this model.
+
+        Parameters
+        ----------
+
+        filename : str
+            Filename used in cond_trainer_export.
+        """
+        real_filename = f"saves/{filename}.pth"
+        
+        if not os.path.isfile(real_filename):
+            print("Error: File not found, cond trainer probably not finished yet.")
+        else:
+            self.flow.load_state_dict(torch.load(real_filename, map_location="cpu"))
+            os.remove(real_filename)
+            self.loss_history = np.load(f"saves/loss_{filename}.npy")
+            os.remove(f"saves/loss_{filename}.npy")
+
+
 
     
     def general_sample(self, Condition, split_size=300000, GPUs=None):
@@ -244,6 +329,8 @@ class GalacticFlow():
 
         """
         #Maybe "recreate" option to re sample at sub_v galaxies (via Diststack and galaxysplit) for Condition?
+
+        self.flow.eval()
 
         sample = self.processor.sample_Conditional(self.flow, self.cond_inds, Condition, split_size=split_size, GPUs=GPUs)
 
@@ -333,6 +420,8 @@ class GalacticFlow():
         """
         if GPUs is not None:
             print("Warning: Multiple GPU support not implemented yet. Using current device.")
+
+        self.flow.eval()
         pdf = self.processor.log_prob(self.flow, X, self.cond_inds, split_size=split_size)
 
         return pdf
@@ -444,8 +533,8 @@ class GalacticFlow():
                 raise RuntimeError("Model has never been trained. Cannot save. If you want to save anyway, set ensure_trained=False.")
             else:
                 #Everything is okay
-                mu = self.processor.mu
-                std = self.processor.std
+                mu = torch.from_numpy(self.processor.mu)
+                std = torch.from_numpy(self.processor.std)
         else:
             if unprepared:
                 print("Warning: Model has never been prepared. Saving anyway with mu=None and std=None.")
@@ -455,12 +544,12 @@ class GalacticFlow():
                 #But this may not be catched in inference if a custom Processor Class does ,e.g., define mu and std as 0 and 1 in __init__... maybe some better way to do this?
             elif untrained:
                 print("Warning: Model has never been trained. Saving anyway.")
-                mu = self.processor.mu
-                std = self.processor.std
+                mu = torch.from_numpy(self.processor.mu)
+                std = torch.from_numpy(self.processor.std)
             else:
                 #Everything is okay
-                mu = self.processor.mu
-                std = self.processor.std
+                mu = torch.from_numpy(self.processor.mu)
+                std = torch.from_numpy(self.processor.std)
 
         #Use definition of model to save + extra keywords (see __init__)
         save_dict = self.definition.copy()
@@ -469,7 +558,19 @@ class GalacticFlow():
         save_dict["std"] = std
         #watch flow's device? but loading does already so maybe not that bad
         save_dict["flow_dict"] = self.flow.state_dict()
-        save_dict["loss_history"] = self.loss_history
+        save_dict["loss_history"] = torch.tensor(self.loss_history)
 
         torch.save(save_dict, path)
 
+
+#Example for a definition dictionary
+#We recommend to use this as a template for your own models. Simply copy and paste and change the values accordingly.
+example_definition = {
+    "processor": "Processor_cond",
+    "cond_inds": torch.tensor([10,11,12,13]),
+    "processor_args": {"N_min": 500, "percentile2": 95},
+    "processor_data": {"folder": "all_sims"},
+    "flow_hyper": {"n_layers":24, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":torch.tensor([512,8,0.2])},
+    "subset_params": {"cond_fn": "cond_M_stars_2age_avZ", "use_fn": "MW_like_galaxy", "train_use_fn_constructor": "construct_MW_like_galaxy_leavout", "leavout_indices": None},
+    "data_prep_args": {"transformation_functions":("np.log10",), "transformation_indices":(torch.tensor([10]),), "inverse_transformations":("10**x",)}
+}
