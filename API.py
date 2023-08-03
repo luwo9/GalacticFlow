@@ -237,59 +237,6 @@ class GalacticFlow():
             time_passed = (end-start)/60
             print(f"Training took about {int(time_passed/60)} hours and {int(time_passed%60)} minutes.")
 
-    #If multithreading will work, or be used someday, this method is no longer needed- wait: if it crashes ?
-    def cond_trainer_export(self, epochs, init_lr, batch_size, gamma, filename):
-        """
-        Export all needed quantities for cond_trainer.py. This allows training in the background.
-
-        Parameters
-        ----------
-        epochs : int
-            Number of epochs to train for.
-        init_lr : float
-            Initial learning rate.
-        batch_size : int
-            Batch size.
-        gamma : float
-            Learning rate decay factor.
-        filename : str
-            Filename cond trainer will save the model to. Interpret this as a tag used to later import the pytorch model back into this model.
-        """
-        #Check if model is prepared
-        if not self.is_prepared:
-            print("Warning: Model not prepared, preparing it now.")
-            self.prepare()
-
-        self.flow.train()
-        #Save cond_trainer files
-        torch.save(self.Data_flow, "cond_trainer/data_cond_trainer.pth")
-        torch.save(self.flow, "cond_trainer/model_cond_trainer.pth")
-        np.save("cond_trainer/params_cond_trainer.npy", np.append(self.cond_inds,np.array([epochs,init_lr,batch_size,gamma])))
-        np.save("cond_trainer/filename_cond_trainer.npy", filename)
-        np.save("cond_trainer/loading_complete.npy", np.array([0]))
-
-    def cond_trainer_import(self, filename):
-        """
-        Import the model that was trained in the background with cond_trainer.py. Loaded pytorch file will be deleted(!), as the model is then saved in this model.
-
-        Parameters
-        ----------
-
-        filename : str
-            Filename used in cond_trainer_export.
-        """
-        real_filename = f"saves/{filename}.pth"
-        
-        if not os.path.isfile(real_filename):
-            print("Error: File not found, cond trainer probably not finished yet.")
-        else:
-            self.flow.load_state_dict(torch.load(real_filename, map_location="cpu"))
-            os.remove(real_filename)
-            self.loss_history = np.load(f"saves/loss_{filename}.npy")
-            os.remove(f"saves/loss_{filename}.npy")
-
-
-
     
     def general_sample(self, Condition, split_size=300000, GPUs=None):
         """
