@@ -6,7 +6,8 @@ import torch.optim as optim
 import itertools
 import time
 
-import device_use
+import copy
+#import device_use
 #Choose device
 #device = device_use.device_use
 
@@ -377,6 +378,13 @@ class NSFlow(nn.Module):
         self.layers = nn.ModuleList(itertools.chain(*zip(conv_layers,coupling_layers)))
         
         self.prior = torch.distributions.Normal(torch.zeros(dim_notcond), torch.ones(dim_notcond))
+
+        #Information about hyperparameters accessible from outside
+        #The function _get_right_hypers below will then reconstruct this back to __init__ arguments, if you change the model, change both.
+        #This is needed in the background for recreating the same model in some cases like sampling with multiprocessing
+        kwargs_parsed = kwargs_CL.copy()
+        kwargs_parsed["network"] = "MLP"
+        self.give_kwargs = {"n_layers":n_layers, "dim_notcond":dim_notcond, "dim_cond":dim_cond, "CL":"CL2"if CL==NSF_CL2 else "CL", **kwargs_parsed}
         
     def forward(self, x, x_cond):
         logdet = torch.zeros(x.shape[0]).to(x.device)
@@ -409,6 +417,15 @@ class NSFlow(nn.Module):
         self.prior = torch.distributions.Normal(torch.zeros(self.dim).to(device), torch.ones(self.dim).to(device))
         return self
 
+
+#Function to get the right hyperparameters for the model.give_kwargs update this if you change the model
+def _get_right_hypers(model_params):
+    kwargs_dict = copy.deepcopy(model_params)
+
+    kwargs_dict["CL"] = NSF_CL2 if kwargs_dict["CL"] == "CL2" else NSF_CL
+    kwargs_dict["network"] = MLP if kwargs_dict["network"] == "MLP" else MLP
+
+    return kwargs_dict
 
 
 def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, gamma=0.998, give_textfile_info=False, print_fn=None, **print_fn_kwargs):
