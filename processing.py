@@ -7,6 +7,8 @@ import subprocess
 import flowcode
 import torch.multiprocessing as mp
 import copy
+import pandas as pd
+import typing
 
 
 ## Some function definitions used in the processing of the data
@@ -18,8 +20,8 @@ def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
     Parameters
     ----------
 
-    galaxy : np.ndarray
-        Galaxy to be rotated.
+    galaxy : pd.DataFrame
+        Galaxy to be rotated. Must contain columns "x" and "y".
     resolution : int, optional, default: 100
         Resolution of the dummy image.
     quant : float, optional, default: 0.75
@@ -31,15 +33,15 @@ def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
     galaxy_rot : np.ndarray
         Rotated galaxy.
     """
-    image = np.histogram2d(galaxy[:,0], galaxy[:,1], bins=resolution)[0]
+    image = np.histogram2d(galaxy["x"], galaxy["y"], bins=resolution)[0]
     fit = PCA(n_components=2).fit(np.argwhere(image>=np.quantile(image, quant)))
     angle = np.arctan2(*fit.components_[1])
     rot_mat = np.array([[np.cos(-angle), -np.sin(-angle)],
                         [np.sin(-angle), np.cos(-angle)]])
-    galaxy_rot = np.copy(galaxy)
-    galaxy_rot[:,:2] = galaxy_rot[:,:2]@rot_mat
+    galaxy_rot = galaxy.copy()
+    galaxy_rot[["x","y"]] = galaxy_rot[["x","y"]]@rot_mat
     #Also rotate velocities
-    galaxy_rot[:,3:5] = galaxy_rot[:,3:5]@rot_mat
+    galaxy_rot[["vx","vy"]] = galaxy_rot[["vx","vy"]]@rot_mat
     return galaxy_rot
 
 
@@ -269,11 +271,22 @@ def mp_evaluate(model, condition, mode, GPUs=None ,split_size=300000, inference_
 
         result = torch.cat(results_collection, dim=0)
 
-    if "x_cond" in condition and mode in ["sample", "sails"]:
-        result = torch.cat([result, condition["x_cond"]], dim=1)
-
     return result
 
+
+def _custom_copy(galaxy, copy_data=True):
+    """
+    Meant to copy a galaxy dict, such that it can be meaningfully modified.
+    """
+    # if copy_data:
+    #             galaxy = copy.deepcopy(galaxy)
+    # else:
+    #     #Make a manual shallow copy but deep copy "galaxy":galaxy_dict
+    #     galaxy = {key:galaxy[key] if key!="galaxy" else copy.deepcopy(galaxy[key]) for key in galaxy.keys()}
+    if copy_data:
+        galaxy = copy.deepcopy(galaxy)
+    
+    return galaxy
 
 
 class Processor():
@@ -312,9 +325,45 @@ class Processor():
         Data = raw*self.std+self.mu
         return Data.numpy()
 
+#Ignore this:
+# New Data format should be implemented: Passed around is only 1 variable: List of dicts, 1 for each galaxy.
+# The dict is of the form {**star_properties, "galaxy":galaxy_properties}, where
+# star_properties is e.g. {"x": shape (N,), "vx":shape (N,),..., "Z": shape (N,), "feh": shape (N,), "ofe": shape (N,), "mass": shape (N,), "age": shape (N,)}
+# galaxy_properties is e.g. {"N_stars": int, "M_stars": float, "M_dm": float, "id": int, ...}
+# Thr comeonent names are saved in a (self.)list of strings, e.g. ["x", "vx", ..., "Z", "feh", "mass", "age"]
+# choose_subset then adds the condition keys to the star_properties dict e.g. M_star shape (N,), and the component names to the list of component names, e.g. "M_star"
+# Any cond_fn then returns a dict e.g. {"M_star":float, "avZ":float,...} Of course use_fn and use_fn have to be adapted to this new format. No longer need dm identification (but can)
+# New fn for collapsing the star_properties dict to a single array of shape (N, 10+), where 10 is the number of components. Then fn that stacks this.
+# For the sampled results, use galaxysplit, N_simply hast to be known by the sampler. Then it can be expanded into a star_properties dict again.
+# the galaxy_properties dict makes no sense for the sampled results, so it is not used there. (But could manually add back e.g. sim ids if comapring to data)
+# Maybe also return a big star_properties dict such that the components are named, but how do get in right smaller dicts? Would need a seperate fn for that.
+#Maybe just offer to return the (self.)list of component names?
+#Also think about API behaviour what should be dne automatically and what not. Good idea: Give sample_galaxy an option to return rawarray or named dict. Then can do both.
+#Raw array than would maybe also return (self.)list of component names this would be the best option for general_sample either (i assume)
+#End of ignore this
 
-
-
+#Data structure:
+#Galaxy is a dict of the form {"stars": df_stars, "gas": df_gas, ..., "galaxy": galaxy_dict}
+#Where df_... is a pandas dataframe with colums like "x", "vx", ..., "Z", "feh", "mass", "age"; galaxy_dict is a dict with keys like "M_stars", "M_dm", "id", ...
+#Carried arround is a list of such dicts, one for each galaxy. (One could later implement as a class usig shared memory, but for now this is fine)
+#Processer stores a list of component names, e.g. ["x", "vx", ..., "Z", "feh", "mass", "age"], How is gas ... handled? Do later with possible api changes?
+#    so cannon way like dict could be better that can be saved at once.  ALL COMPS EVEN IF ALSO CONDITION!!
+#Also store a list of condition names, e.g. ["M_stars", "avZ", ...] as condnames["galaxy"] with maybe also condnames["stars"] for e.g. x as condition.
+#Then whenever data is passed to flow names are given (all index accesed is deprecated) and the order is checked.
+#choose_subset should add a new dict (better df?) to the galaxy "parameters"/"conditions" with cond names and values, e.g. {"M_stars":float, "avZ":float,...}, diststack than handels this.
+#For inference:
+#Cond_sample also uses cond names and a named input, not cond_inds. Allows for option to insert or not insert cond values.
+#As any inds are somewhat deprecated it should return a df for sure.
+#Luckily np.split can handle the df.
+#For sample_galaxy: another option if return df or galaxy (dict) with df as stars key. Conditions/Parameters could then be added if not inserted (maybe an option for that).
+#    Conition is input as dict or df and then again checked for names and order (sample_conditional should probably do that)
+#train_flow should also no longer take cond_inds but cond_names and then interface with data like a dataframe. (But then data_to_flow reutrns a df)
+#We consider inserting conditions in get_data as bad practice, this is part of the choose_subset step, but if done:
+#Add the condition names (only) to the condition names list
+#No: we do it this way:
+# cond_names is a dict. That has a list of names for keys "galaxy", "stars", "gas". This allows to use e.g. "x" as a star condition when learning p(v|x) for stars and p(v|z) for gas.
+#In case of multiple astro objects add them acordingly in get_data and choose_subset. Choose subset must be called with the same cond fn (galaxy conds) for all astro objects.
+#In future make maybe cond selection own method to avoid this special treatment.
 class Processor_cond():
     """
     Processor for conditional model. Made to complete several tidious tasks along the workflow of training and evaluating a conditional normalizing flow.
@@ -333,19 +382,6 @@ class Processor_cond():
     The processor stores properites like mean and standard deviation of the data, or which components are learnt in log.
     This allows easily to e.g. transform a sample from the flow back to the physical interpretation.
 
-    Parameters
-    ----------
-
-    percentile1 : float, optional, default: 95
-        Percentile of the data to be used for the first percentile cut in radial distance.
-    percentile2 : float, optional, default: 95
-        Percentile of the data to be used for the second percentile cut in radial distance.
-    feh_min : float, optional, default: -8
-        Minimum [Fe/H] to be used in the data. Values below this will be excluded.
-    ofe_min : float, optional, default: -1
-        Minimum [O/Fe] to be used in the data. Values below this will be excluded.
-    N_min : int, optional, default: 0
-        Minimum number of stars to be used in the data. Galaxies with less stars will be excluded.
     
     Methods
     -------
@@ -377,13 +413,9 @@ class Processor_cond():
     log_learn : array of bools
         Array of bools, indicating which components are learnt in log.
     """
-    def __init__(self, percentile1=95, percentile2=95, feh_min=-8, ofe_min=-1, N_min=0, r_max=27.7):
-        self.percentile1 = percentile1
-        self.percentile2 = percentile2
-        self.feh_min = feh_min
-        self.ofe_min = ofe_min
-        self.N_min = N_min
-        self.r_max = r_max
+    def __init__(self):
+        self.component_names = {}
+        self.cond_names = {}
 
     
     #Some cleaning up and clarification could be done:
@@ -392,8 +424,8 @@ class Processor_cond():
     #included in the data.
     def get_data(self, folder):
         """
-        Reads the data from the data folder and returns the data as a list of arrays, each containing the data of one galaxy.
-        Also calculates the number of stars, the dark matter mass and the stellar mass of each galaxy. The dark matter mass is read from the file name.
+        Reads the data from a data folder and returns the data as list of dicts, each containing the data of one galaxy.
+        Calculates the number of stars, the dark matter mass and the stellar mass of each galaxy. The dark matter mass is read from the file name.
 
         Parameters
         ----------
@@ -404,31 +436,30 @@ class Processor_cond():
         Returns
         -------
 
-        Data : list of arrays
-            List of arrays, each containing the data of one galaxy.
-        N_stars : array
-            Array containing the number of stars in each galaxy.
-        M_stars_s : array
-            Array containing the stellar mass of each galaxy.
-        M_dm : array
-            Array containing the dark matter mass of each galaxy.
+        Galaxies : list of dicts
+            List of dicts, each containing the data of one galaxy. The data is stored in two keys, "stars" and "galaxy".
+            The "stars" key contains the data of the stars in the galaxy, the "galaxy" key contains global data of the galaxy,
+            like the dark matter mass, the stellar mass and the number of stars.
         """
         files = glob.glob(f"{folder}/*.npy")
 
-        Data = []
-        N_stars = np.zeros(len(files))
-        M_stars = np.zeros(len(files))
-        M_dm = np.zeros(len(files))
+        Galaxies = []
+
+        component_names = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "mass", "age"]
+        self.component_names["stars"] = component_names#update after use_fn
 
         for i, file in enumerate(files):
-            galaxy = np.load(file).T
+            star_data = np.load(file).T
+            M_dm = float(file.split("_")[-1][:-4])
+            M_stars = np.sum(star_data[:,9])
+            
+            star_data = pd.DataFrame(star_data, columns=component_names)
+            galaxy_globaldata = {"M_dm": M_dm, "M_stars": M_stars, "N_stars": len(star_data)}#Add sim id or index?
 
-            N_stars[i] = galaxy.shape[0]
-            M_dm[i] = float(file.split("_")[-1][:-4])
-            M_stars[i] = np.sum(galaxy[:,9])
-            Data.append(galaxy)
+            galaxy = {"stars": star_data, "galaxy": galaxy_globaldata}
+            Galaxies.append(galaxy)
 
-        return Data, N_stars, M_stars, M_dm
+        return Galaxies
 
 
     #Work with Galaxy data and stack to distribution interpretation with diststack
@@ -440,15 +471,31 @@ class Processor_cond():
 
 
     #Transform to 1 big array (interpretation as individual distribution points/samples) to feed flow
-    def diststack(self, Data):
+    def diststack(self, Galaxies):
         """
-        Stacks a list of arrays of glaxy data into a single array, the statistical interpretation. Can be understood as the inverse of galaxy_split.
+        Stacks the Galaxies tnto a single DataFrame, the statistical interpretation. Can be understood as the inverse of galaxy_split.
         """
-        return np.vstack(Data)
+
+        #Stack conditions together in one (N_star_tot, n_cond) dataframe.
+        #We use np.repeat as it is fast and efficient. (Potentially use direct indice writing? That would save np.concatenate)
+        Condition_column_names = Galaxies[0]["parameters"].columns.tolist()
+        n_stars = np.array([galaxy["stars"].shape[0] for galaxy in Galaxies])
+
+        all_cond_data = np.concatenate([galaxy["parameters"].values for galaxy in Galaxies], axis=0)
+        all_cond_data = np.repeat(all_cond_data, n_stars, axis=0)
+        all_cond_data = pd.DataFrame(all_cond_data, columns=Condition_column_names)
+        
+        #Stack stars together in one (N_star_tot, n_comp) dataframe.
+        all_data = [galaxy["stars"] for galaxy in Galaxies]#In such cases allow later "stars" to be given as input e.g. "gas" instead
+        all_data = pd.concat(all_data, ignore_index=True)
+
+        #Stack together
+        all_data = pd.concat([all_data, all_cond_data], axis=1)
+        return all_data
 
 
     #Data cleaning
-    def constraindata(self, Data, M_dm_old, info=True):
+    def constraindata(self, Galaxies, copy_data=True, info=True, percentile1=95, percentile2=95, feh_min=-8, ofe_min=-1, N_min=0, r_max=27.7):
         """
         Does the data cleaning, based on the parameters given in the initialization.
         Constraints stars to be used on their metallicity and distance from the center of the galaxy.
@@ -464,24 +511,28 @@ class Processor_cond():
 
         Parameters
         ----------
-        Data : list of arrays
-            List of arrays, each containing the data of one galaxy.
-        M_dm_old : array
-            Array containing the dark matter mass of each galaxy, before the data cleaning.
+        Galaxies : list of dicts	
+            List of dicts, each containing the data of one galaxy.
+        copy_data : bool (optional) , default: True
+            If True, the data is copied before cleaning, such that the original data is not changed.
         info : bool (optional) , default: True
             If True prints number of stars removed by cleaning and the number of galaxies removed by cleaning.
+        percentile1 : float, optional, default: 95
+            Percentile of the data to be used for the first percentile cut in radial distance.
+        percentile2 : float, optional, default: 95
+            Percentile of the data to be used for the second percentile cut in radial distance.
+        feh_min : float, optional, default: -8
+            Minimum [Fe/H] to be used in the data. Values below this will be excluded.
+        ofe_min : float, optional, default: -1
+            Minimum [O/Fe] to be used in the data. Values below this will be excluded.
+        N_min : int, optional, default: 0
+            Minimum number of stars to be used in the data. Galaxies with less stars will be excluded.
         
         Returns
         -------
 
-        Data_out : list of arrays
-            List of arrays, each containing the data of one galaxy, after the data cleaning.
-        N_stars : array
-            Updated array containing the number of stars in each galaxy.
-        M_stars : array
-            Updated array containing the stellar mass of each galaxy.
-        M_dm_new : array
-            Updated array containing the dark matter mass of each galaxy.
+        Galaxies_out : list of dicts
+            List of dicts, each containing the data of one galaxy, after the data cleaning.
 
         Note
         ----
@@ -495,47 +546,45 @@ class Processor_cond():
         To remove these outliers, the percentile2-th percentile of the stars distances is taken as the maximum distance, for those galaxies.
 
         """
-        Data_out = []
-        N_stars = []
-        M_stars = []
-        M_dm_new = []
+        Galaxies_out = []
         N_old = 0
-        for galaxy, M_dm in zip(Data, M_dm_old):
-            N_old += galaxy.shape[0]
+        N_new = 0
+        for galaxy in Galaxies:
+            N_old += galaxy["stars"].shape[0]
 
             #Constrains on stars
             #Watch out for hierachy of constraints
 
             #Distance
             #Get radius for a given percentile of stars
-            R_max = np.percentile(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1)), self.percentile1)
+            R_max = np.percentile(np.sqrt(np.sum(galaxy["stars"][["x","y","z"]]**2, axis=1)), percentile1)
             #But cut at most at R_MAX_MAX(>largest galaxy in sample), dont include other structures
-            R_MAX_MAX = self.r_max
+            R_MAX_MAX = r_max
             R_max = np.minimum(R_max, R_MAX_MAX)
             costrained_by_preset = R_max == R_MAX_MAX
             #Only stars within this radius
-            is_validR = (np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max))
+            is_validR = (np.sqrt(np.sum(galaxy["stars"][["x","y","z"]]**2, axis=1))<=(R_max))
 
             #If the preset cut at R_MAX_MAX was applied e.g. due to an other structure
             #Do another percentile constrain inside r=R_MAX_MAX, to exclude farout stars
             if costrained_by_preset:
-                R_max2 = np.percentile(np.sqrt(np.sum(galaxy[is_validR,:3]**2, axis=1)), self.percentile2)
-                is_validR = is_validR&(np.sqrt(np.sum(galaxy[:,:3]**2, axis=1))<=(R_max2))
+                R_max2 = np.percentile(np.sqrt(np.sum(galaxy["stars"][is_validR][["x","y","z"]]**2, axis=1)), percentile2)
+                is_validR = is_validR&(np.sqrt(np.sum(galaxy["stars"][["x","y","z"]]**2, axis=1))<=(R_max2))
 
             is_valid = is_validR
 
             #Metallcity
             #Ignore last 10 values of metallicity
-            last_10 = np.argsort(galaxy[:,6])[-10:]
-            is_valid = is_valid & (np.isin(np.arange(galaxy.shape[0]), last_10, invert=True))
+            last_10 = np.argsort(galaxy["stars"]["Z"])[-10:]
+            is_valid = is_valid & (np.isin(np.arange(galaxy["stars"].shape[0]), last_10, invert=True))
             #is_valid = is_valid & (galaxy[:,6]>=np.quantile(galaxy[is_valid,6], 10e-4))&(galaxy[:,6]<=np.quantile(galaxy[is_valid,6], 0.9999))
 
             #Fe/H
-            is_valid = is_valid & (galaxy[:,7]>=self.feh_min)
+            is_valid = is_valid & (galaxy["stars"]["feh"]>=feh_min)
             #is_valid = is_valid & (galaxy[:,7]>=-5)&(galaxy[:,7]<=np.quantile(galaxy[is_valid,7], 0.9999))
 
             #O/Fe
-            is_valid = is_valid & (galaxy[:,8]>=self.ofe_min)
+            is_valid = is_valid & (galaxy["stars"]["ofe"]>=ofe_min)
             #is_valid = is_valid & (galaxy[:,8]>=np.quantile(galaxy[is_valid,8], 10e-3))&(galaxy[:,8]<=np.quantile(galaxy[is_valid,8], 1-10e-3))
 
 
@@ -552,31 +601,33 @@ class Processor_cond():
 
 
             #Apply constrains now
-            galaxy = galaxy[is_valid]
+            galaxy = _custom_copy(galaxy, copy_data=copy_data)
+
+            galaxy["stars"] = galaxy["stars"][is_valid]
+            
+            
 
             #Calculate new number of stars
-            N_star = galaxy.shape[0]
+            N_star = galaxy["stars"].shape[0]
 
             #Constrain on galaxies (new number of stars)
-            if N_star>=self.N_min:
+            if N_star>=N_min:
                 #Rotate the glaxy in the x-y plane so that it is horizontal, as part of the data cleaning
                 #Performed here for efficiency, since some galaxies are removed by now
-                galaxy = rotate_galaxy_xy(galaxy, quant=0.9)
+                galaxy["stars"] = rotate_galaxy_xy(galaxy["stars"], quant=0.9)
 
-                Data_out.append(galaxy)
-                N_stars.append(N_star)
-                M_stars.append(np.sum(galaxy[:,9]))
-                M_dm_new.append(M_dm)
-        
+                #Update global properties
+                N_new += N_star
+                galaxy["galaxy"]["N_stars"] = N_star
+                galaxy["galaxy"]["M_stars"] = np.sum(galaxy["stars"]["mass"])
 
-        N_stars = np.array(N_stars)
-        M_stars = np.array(M_stars)
-        M_dm_new = np.array(M_dm_new)
+                Galaxies_out.append(galaxy)
+
 
         if info:
-            print(f"Cut out {len(Data)-len(Data_out)} of {len(Data)} galaxies, {N_old-np.sum(N_stars)} of {N_old} stars (~{(N_old-np.sum(N_stars))/N_old*100 :.0f}%).")
+            print(f"Cut out {len(Galaxies)-len(Galaxies_out)} of {len(Galaxies)} galaxies, {N_old-N_new} of {N_old} stars (~{(N_old-N_new)/N_old*100 :.0f}%).")
 
-        return Data_out, N_stars, M_stars, M_dm_new
+        return Galaxies_out
     
 
     #This function can be rewritten:
@@ -585,89 +636,88 @@ class Processor_cond():
     #The conditions can be moved to diststack where then also hstack is done, additional input is N_stars, M_stars, M_dm
     #In general the condition finding will also vary so it can be outsourced to a function using (galaxy, M_star, M_dm_g) and returning the Condition array as below
     #Or inputting (Data, N_stars, M_stars, M_dm) and returning the condition array, then diststack only takes additonal input.
-    def choose_subset(self, Data, N_stars, M_stars, M_dm, comp_use = np.array([True]*9+[False]+[True]), cond_fn = ext.cond_M_stars, use_fn = ext.MW_like_galaxy, info=True):
+    def choose_subset(self, Galaxies, comp_use = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age"], cond_fn = ext.cond_M_stars, use_fn = ext.MW_like_galaxy, copy_data=True, info=True):
         """
         Choose a subset of the data. Chosen are components, condition and galaxies.
         This is not part of the data cleaning, but rather a choice of what to be used.
 
         Parameters
         ----------
-        Data : list of arrays
-            List of arrays, each containing the data of one galaxy.
-        N_stars : array
-            Array containing the number of stars in each galaxy.
-        M_stars : array
-            Array containing the total mass of stars in each galaxy.
-        M_dm : array
-            Array containing the total mass of dark matter in each galaxy.
-        comp_use : array of bools, optional, default: np.array([True]*9+[False]+[True])
-            Array of bools, each entry corresponds to a component, if True the component is used.
-            False means the component is not used. The order is: x, y, z, vx, vy, vz, Z, Fe/H, O/Fe, m_star, age.
+        Galaxies : list of dicts
+            Galaxy data to choose a subset from.
+        comp_use : list of of strings, optional, default: ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age"]
+            List of strings, specifying which components to use.
         cond_fn : function, optional, default: externalize.cond_M_stars
-            Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a tuple of floats, specifiying the condition of each galaxy.
+            Function that takes galaxy and returns the galaxy parameters/conditons.
+            Must take galaxy as input and return dict with float values or pandas.DataFrame(dict). E.g. {"M_star": 1e11, "average_age": 5e9}.
         use_fn : function, optional, default: externalize.MW_like_galaxy
-            Function that takes (galaxy, N_star, M_star, M_dm_g) and returns a bool, if True the galaxy is used.
+            Function that takes galaxy and returns bool, specifying if galaxy should be used.
         info : bool, optional, default: True
             If true print info about the used subset of galaxies.
         
         Returns
         -------
-        Data_ch : list of arrays
-            List of arrays, each containing the data of one galaxy, after choosing the subset.
-        N_stars_ch : array
-            Array containing the number of stars in each galaxy, after choosing the subset.
-        M_stars_ch : array
-            Array containing the total mass of stars in each galaxy, after choosing the subset.
-        M_dm_ch : array
-            Array containing the total mass of dark matter in each galaxy, after choosing the subset.
+        Galaxies_out : list of dicts
+            Subset of the input galaxies.
         """
-        Data_ch = []
-        N_stars_ch = []
-        M_stars_ch = []
-        M_dm_ch = []
+        Galaxies_out = []
 
-        for galaxy, N_star, M_star, M_dm_g in zip(Data, N_stars, M_stars, M_dm):
-            #Choose comonents
-            galaxy = galaxy[:, comp_use]
-            #Choose subset
-            if use_fn(galaxy, N_star, M_star, M_dm_g):
-                #Choose condition properties and pad galaxy with it
-                Condition = np.array([*cond_fn(galaxy, N_star, M_star, M_dm_g)])
-                galaxy = np.hstack((galaxy, Condition.reshape(-1,Condition.shape[0]).repeat(galaxy.shape[0], axis=0)))
+        for galaxy in Galaxies:
+            #Ccheck if galaxy should be used
+            if use_fn(galaxy):
+                #Copy galaxy as desired
+                galaxy = _custom_copy(galaxy, copy_data=copy_data)
 
-                #Now select the subset
-                Data_ch.append(galaxy)
-                N_stars_ch.append(N_star)
-                M_stars_ch.append(M_star)
-                M_dm_ch.append(M_dm_g)
+                #Compute galaxy conditions
+                Condition = cond_fn(galaxy)
+                if type(Condition)==dict:
+                    Condition = pd.DataFrame(Condition)
+                elif type(Condition)!=pd.DataFrame:
+                    raise TypeError("cond_fn must return dict or pd.DataFrame")
+                
+                #For now, warn if parameters are set differently, no dont, in case it is changed maybe
 
-        N_stars_ch = np.array(N_stars_ch)
-        M_stars_ch = np.array(M_stars_ch)
-        M_dm_ch = np.array(M_dm_ch)
+                #Add conditions to galaxy, only as dict keys, diststack will add them to the data
+                galaxy["parameters"] = Condition
+                #Save condition names (important for e.g. ordering of components before transforming to torch tensors)
+                self.cond_names["galaxy"] = Condition.columns.to_list()
+
+                #Old:
+                #Condition = np.array([*cond_fn(galaxy, N_star, M_star, M_dm_g)])
+                #galaxy = np.hstack((galaxy, Condition.reshape(-1,Condition.shape[0]).repeat(galaxy.shape[0], axis=0)))
+
+                #Choose components
+                galaxy["stars"] = galaxy["stars"][comp_use]
+                #And remove them from component names
+                self.component_names["stars"] = [name for name in self.component_names["stars"] if name in comp_use]
+
+                #Now add galaxy to output
+                Galaxies_out.append(galaxy)
 
         if info:
             #Info about galaxies choosen in this subset, not stars
-            print(f"Chose {len(Data_ch)} of {len(Data)} galaxies.")
+            print(f"Chose {len(Galaxies_out)} of {len(Galaxies)} galaxies.")
         
-        return Data_ch, N_stars_ch, M_stars_ch, M_dm_ch
+        return Galaxies_out
 
 
 
 
-    def Data_to_flow(self, Data_c, transformation_functions, transformation_indices, inverse_transformations):
+    def Data_to_flow(self, Galaxies_stacked: pd.DataFrame, transformation_functions, transformation_components, inverse_transformations, copy_data=True) -> pd.DataFrame:
         """
         Converts the data to a format that can be used for training the flow.
-        Namely the data is transformed to a torch tensor, the components to learn in log are transformed to log and the data is normalized such that it has mean 0 and std 1.
+        Some manual transformations are applied, e.g. log10 for masses and the data is normalized.
+        Of course this transforation needs to be inverted/respected later, which is automatically done by sample_to_Data, sample_Conditional and log_prob.
 
         Parameters
         ----------
 
-        Data_c : array
-            Array of (constrained) data, to be transformed to a format that can be used for training the flow.
+        Galaxies_stacked : pd.DataFrame
+            DataFrame of stacked data, to be transformed to a format that can be used for training the flow.
         transformation_functions : list of functions
             List of functions, each function takes an array and transforms it. Maps (N, M) -> (N, M).
-        transformation_indices : list of arrays
-            List of arrays, each array contains the indices of the components to be transformed by the corresponding function in transformation_functions.
+        transformation_components : list of lists of strings
+            List of lists, each list contains the component names to be transformed by the corresponding function in transformation_functions.
         inverse_transformations : list of functions
             List of functions, each function takes an array and transforms it. Maps (N, M) -> (N, M).
             The inverse of the corresponding function in transformation_functions, this is later used to transform the samples back to the physical data.
@@ -675,31 +725,35 @@ class Processor_cond():
         Returns
         -------
 
-        Data_p : torch tensor
-            Tensor of the transformed data.
+        Galaxies_stacked : pd.DataFrame
+            DataFrame of stacked data, transformed/normalized such that can be used for training the flow.
         """
-        Data_p = np.copy(Data_c)
-
+        
+        #This is independently implemented from _custom_copy, as this is intended for galaxy type data not stacked data and may be changed
+        if copy_data:
+            Galaxies_stacked = Galaxies_stacked.copy()
+        
         #Learn components scaled with corresponding functions
         self.trf_fn_inv = inverse_transformations
-        self.trf_ind = transformation_indices
+        self.trf_comp = transformation_components
         self.trf_fn = transformation_functions
-        for inds, fn in zip(self.trf_ind, self.trf_fn):
-            Data_p[:,inds] = fn(Data_p[:,inds])
+        for comp, fn in zip(self.trf_comp, self.trf_fn):
+            Galaxies_stacked[comp] = fn(Galaxies_stacked[comp])
 
 
         #Subtract mean from all values and divide by std to normalize data
-        self.mu = Data_p.mean(axis=0)
-        self.std = Data_p.std(axis=0)
+        self.mu = Galaxies_stacked.mean(axis=0)
+        self.std = Galaxies_stacked.std(axis=0)
 
-        Data_p -= self.mu
-        Data_p /= self.std
+        Galaxies_stacked -= self.mu
+        Galaxies_stacked /= self.std
 
-        Data_p = torch.from_numpy(Data_p).type(torch.float)
-        return Data_p
+        #Assure the right order of components
+        Galaxies_stacked = Galaxies_stacked[self.component_names["stars"]+self.cond_names["galaxy"]]
+        return Galaxies_stacked
 
 
-    def sample_to_Data(self, raw):
+    def sample_to_Data(self, flow_sample: pd.DataFrame) -> pd.DataFrame:
         """
         Converts a flow sample back to the physical data.
         Can be understood as the inverse of Data_to_flow, see there for more details.
@@ -707,23 +761,25 @@ class Processor_cond():
         Parameters
         ----------
 
-        raw : torch tensor
-            Tensor of the flow sample.
+        flow_sample : pd.DataFrame
+            DataFrame of the flow sample, to be transformed back to the physical data.
         
         Returns
         -------
 
-        Data : array
-            Array of the physical data.
+        Galaxies_stacked : pd.DataFrame
+            DataFrame of the flow sample, transformed back to the physical data.
         """
-        std = torch.from_numpy(self.std).type(torch.float)
-        mu = torch.from_numpy(self.mu).type(torch.float)
-        Data = raw*std+mu
-        for inds, fn in zip(self.trf_ind[::-1], self.trf_fn_inv[::-1]):
-            Data[:,inds] = fn(Data[:,inds])
-        return Data.numpy()
+        #Invert normalization
+        Galaxies_stacked = flow_sample*self.std+self.mu
 
-    def sample_Conditional(self, model, cond_indices, Condition, split_size=300000, GPUs=None):
+        #Invert additional transformations, (f*g)^-1 = g^-1 * f^-1
+        for comp, fn in zip(self.trf_comp[::-1], self.trf_fn_inv[::-1]):
+            Galaxies_stacked[comp] = fn(Galaxies_stacked[comp])
+
+        return Galaxies_stacked
+
+    def sample_Conditional(self, model, Condition:typing.Union[pd.DataFrame, dict], split_size=300000, GPUs=None, reinsert_condition="all") -> pd.DataFrame:
         """
         Samples the conditional flow using a given condition. The condition is transformed to the format used for training the flow and then the flow is sampled.
         The sampling is done on the GPU in batches of split_size, because the GPU memory is limited. Allows for parallel sampling on multiple GPUs.
@@ -733,44 +789,80 @@ class Processor_cond():
 
         model : flowcode.NSFLow object
             The flow model to sample from.
-        cond_indices : array
-            Array containing the indices of the components of the condition.
-        Condition : array
-            Array containing the condition.
+        Condition : pd.DataFrame or dict
+            The (named) condition to sample from. Recomended format is DataFrame. If dict, the keys are the condition names and the values are the condition values,
+            e.g. (my_Condition=){"M_star": np.array([1e10])*100, "average_age": np.array([1e9])*100}.
+            If pd.DataFrame, the columns are the condition names and the rows are the condition values, e.g. pd.DataFrame(my_Condition).
         split_size : int (optional), default: 300000
-            The size of the batches the sampling is done in.
+            The size of the batches the sampling is done in. (=The size that will be moved to the GPU at once.)
         GPUs : list of ints (optional), default: None
             List of the GPUs to use for sampling. If None, use device of model.
+        reinsert_condition : {"all", "local", "none"} (optional), default: "all"
+            Whether to reinsert the condition into the sample returned.
+            "all": Reinsert all condition values into the sample.
+            "local": Reinsert only the condition values that are not galaxy properties but e.g. star properties (e.g. x if learning p(x|y)).
+            "none": Do not reinsert any condition values into the sample.
         
         Returns
         -------
 
-        sample : array
-            Array containing the sample of the flow for the given condition.
+        sample : pd.DataFrame
+            DataFrame containing the sample of the flow for the given condition.
         """
 
+        #All condition names in the right order
+        cond_names_in_right_order = self.cond_names["stars"] + self.cond_names["galaxy"]
 
-        #Format: Contition is (N,n_cond) array cond_indices has length n_cond
-        Cond_flow = np.copy(Condition)
+        #Check the inputs
+        if isinstance(Condition, dict):
+            Condition = pd.DataFrame(Condition)
+        elif not isinstance(Condition, pd.DataFrame):
+            raise TypeError("Condition must be dict or pd.DataFrame")
+        
+        if not set(Condition.columns.tolist()) == set(cond_names_in_right_order):
+            raise ValueError("Condition must contain all condition names and no additional ones.")
+        
+
+        #Copy condition to not change original
+        Cond_flow = Condition.copy()
         
         #Transform condition if scaled
-        for inds, fn in zip(self.trf_ind, self.trf_fn):
-            is_trf = np.isin(np.sort(cond_indices), inds)
-            Cond_flow[:, is_trf] = fn(Cond_flow[:, is_trf])
+        for comp, fn in zip(self.trf_comp, self.trf_fn):
+            is_trf = list(set(Cond_flow.columns.tolist()) & set(comp))
+            Cond_flow[is_trf] = fn(Cond_flow[is_trf])
 
         #Scale condition as used for training
-        Cond_flow = (Cond_flow-(self.mu[cond_indices]))/(self.std[cond_indices])
+        Cond_flow = (Cond_flow-(self.mu[cond_names_in_right_order]))/(self.std[cond_names_in_right_order])
 
-        Cond_flow = torch.from_numpy(Cond_flow).type(torch.float)
+        #Make sure the order is correct (=as trained) before converting to tensor
+        Cond_flow = Cond_flow[cond_names_in_right_order]
+        #Convert to tensor
+        Cond_flow = torch.from_numpy(Cond_flow.values).type(torch.float)
 
         #Sample the flow
-
         sample = mp_evaluate(model, {"x_cond": Cond_flow}, mode="sample", GPUs=GPUs, split_size=split_size)
 
+        #Convert to DataFrame recover component order as used for training
+        sample = sample.cpu().numpy()
+        non_cond_column_names = [name for name in self.component_names["stars"] if name not in self.cond_names["stars"]] #move to @property?
+        sample = pd.DataFrame(sample, columns=non_cond_column_names)
+
+        #If desired, reinsert condition
+        if reinsert_condition == "all":
+            sample = pd.concat([sample, Condition], axis=1)
+            sample = sample[self.component_names["stars"]+self.cond_names["galaxy"]]
+        elif reinsert_condition == "local":
+            sample = pd.concat(sample, Condition[self.cond_names["stars"]], axis=1)
+            sample = sample[self.component_names["stars"]]
+        elif reinsert_condition == "none":
+            sample = sample[non_cond_column_names]
+        else:
+            raise ValueError("reinsert_condition must be 'all', 'local' or 'none'")
+        
         return sample
     
     #Function to correctly evaluate the pdf of the flow
-    def log_prob(self, model, data, cond_indices, GPUs, split_size=300000, inference_mode=True):
+    def log_prob(self, model, X, GPUs=None, split_size=300000, inference_mode=True):
         """
         Evaluates the log probability of the flow for a given data sample.
         The evaluation is done on the GPU in batches of split_size, because the GPU memory is limited.
@@ -782,12 +874,12 @@ class Processor_cond():
 
         model : flowcode.NSFLow object
             The flow model to evaluate.
-        data : array
-            Array containing the data sample with conditions.
-        cond_indices : array
-            Array containing the indices of the components of the condition.
-        GPUs : list of ints
-            List of the GPUs to use for evaluation.
+        X : pd.DataFrame or dict
+            Points (With conditions) to evaluate pdf at. Recomended format is DataFrame. If dict, the keys are the component names and the values are the component values,
+            e.g. (my_data=){"M_star": np.array([1e10])*100, "average_age": np.array([1e9])*100}. If pd.DataFrame, the columns are the component names and the rows are the component values,
+            e.g. pd.DataFrame(my_data).
+        GPUs : list of ints (optional), default: None
+            List of the GPUs to use for sampling. If None, use device of model.
         split_size : int (optional), default: 300000
             The size of the batches the evaluation is done in.
         inference_mode : bool (optional), default: True
@@ -801,40 +893,54 @@ class Processor_cond():
         """
         if self.trf_logdet is None:
             raise ValueError("Derivatives not specified in Data_to_flow, cannot evaluate log_prob")
-        
-        #device = model.parameters().__next__().device
 
-        mask_cond = np.isin(np.arange(data.shape[1]), cond_indices)
-        #Format: data is (N,n) array
-        data_flow = np.copy(data)
-        logdet_transform = np.zeros((data_flow.shape[0],))        
+        #Check the inputs
+        if isinstance(X, dict):
+            X = pd.DataFrame(X)
+        elif not isinstance(X, pd.DataFrame):
+            raise TypeError("X must be dict or pd.DataFrame")
+        
+        if not set(X.columns.tolist()) == set(self.component_names["stars"]+ self.cond_names["galaxy"]):
+            raise ValueError("X must contain all component names and no additional ones.")
+        
+
+        X_flow = X.copy()
+        logdet_transform = np.zeros((X_flow.shape[0],))        
 
         #x_flow = trandformations(x), x_cond_flow = transformations(x_cond)
         #log p(x|x_cond) = log p_flow(x_flow|x_cond_flow) + sum_transformations(logdet_trf) , where logdet_trf is evaluated at the current x_flow at each transformation step
 
-        for inds, fn, logdet in zip(self.trf_ind, self.trf_fn, self.trf_logdet):
-            data_flow[:,inds] = fn(data_flow[:,inds])
-            is_transformed = np.isin(np.arange(data_flow.shape[1]), inds)
-            x_flow = data_flow[:,is_transformed & ~mask_cond]
-            x_cond_flow = data_flow[:,is_transformed & mask_cond]
+        all_conds = self.cond_names["stars"] + self.cond_names["galaxy"]
+        all_non_conds = [name for name in self.component_names["stars"] if name not in self.cond_names["stars"]]
+
+        for comp, fn, logdet in zip(self.trf_comp, self.trf_fn, self.trf_logdet):
+            X_flow[comp] = fn(X_flow[comp])
+
+            #Order perserving set intersection
+            trf_and_cond = [name for name in all_conds if name in comp]
+            x_cond_flow = X_flow[trf_and_cond]
+            trf_and_noncond = [name for name in all_non_conds if name in comp]
+            x_flow = X_flow[trf_and_noncond]
+            
             #Evaluate logdet of transformation x_flow is the real input of the jacobian, i.e. jacobian matrix is len(x_flow) x len(x_flow)
-            #However thaere may be some cases where the condition is needed as input e.g. transforming p(x|y) to p(r|phi)
+            #However thaere may be some cases where the condition is needed as input e.g. transforming p(x|y) to p(r|phi) #Thi should fail at sampling with y input as condition phi cannot be computed without x
             #with jacobian simply dr/dx = x/sqrt(x^2+y^2), which depends on y
             #The jacobian for transforming pdfs is only needed for any unconditional values as it does not need to be normalized in the condition
             #Most functions will however be logdet(x,_) where _ is not used
-            if (is_transformed & ~mask_cond).any():
+            if len(trf_and_cond) > 0:
                 logdet_transform += logdet(x_flow, x_cond_flow)
 
         #Now the scaling transform: x_flow = (x-mu)/std
-        data_flow = (data_flow-(self.mu))/(self.std)
+        X_flow = (X_flow-(self.mu))/(self.std)
         #The jacobian matrix is diagonal with entries 1/std, such that the logdet is simply sum(log(1/std)) = sum(-log(std))
         #This is the same for every point in the sample.
         #The logdet for the conditional part is irrelevant as there is no normalization in the condition
-        logdet_transform -= np.sum(np.log(self.std))
+        logdet_transform -= np.sum(np.log(self.std.values))
 
         #Now after all transformations thae transformed data point is:
-        x_flow = data_flow[:,~mask_cond]
-        x_cond_flow = data_flow[:,mask_cond]
+        #In the order used in the flow
+        x_flow = X_flow[all_non_conds].values
+        x_cond_flow = X_flow[all_conds].values
 
         #Evaluate the model, use only stacks of split_size because GPU memory is limited
 
