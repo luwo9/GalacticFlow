@@ -4,7 +4,12 @@ import glob
 from sklearn.decomposition import PCA
 import externalize as ext
 import subprocess
+import flowcode
+import torch.multiprocessing as mp
+import copy
 
+
+## Some function definitions used in the processing of the data
 
 def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
     """
@@ -39,8 +44,9 @@ def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
 
 
 #Function to operate ext_sample.py by calling multiple versions of it with subprocess.Popen, allowing for parallel sampling
-
+#Deprecated
 def parallel_sample(model, condition_or_n, GPU_nbs, split_size=300000):
+    print("WARNING: This is a deprecated function. Use mp_evaluate instead.")
     n_GPUs = len(GPU_nbs)
     if isinstance(condition_or_n, int):
         condition_or_n_iter = [condition_or_n//n_GPUs]*n_GPUs
@@ -84,6 +90,190 @@ def parallel_sample(model, condition_or_n, GPU_nbs, split_size=300000):
     return sample
 
 
+#For multi-gpu evaluation of the model
+def _splitN(N_tot, N_per_batch):
+    N_batches = N_tot//N_per_batch
+    N_left = N_tot%N_per_batch
+    return ([N_per_batch]*N_batches + [N_left]) if N_left != 0 else [N_per_batch]*N_batches
+
+def _evaluate_model_on_gpu(rank, gpu_id, model_dict, model_params, condition, queue, loading_result_is_fisnished, evaluate, split_size, inference_mode):
+    #condition must be dict. If evaluate is pdf, then condition must contain "x"  and "x_cond".
+    #If evaluate is sample, then condition must contain "x_cond" or "N" (N in case of an unconditional model).
+    #If evaluate is sails additionally "m" the Markoc chain length must be supplied.
+    if evaluate not in ["pdf", "sample", "sails"]:
+        raise ValueError("evaluate must be one of pdf, sample or sails")
+    
+    device = f"cuda:{gpu_id}"
+
+
+
+    #Get right model params
+    right_params = flowcode._get_right_hypers(model_params)
+
+    #Load model
+    model = flowcode.NSFlow(**right_params)
+    model.load_state_dict(model_dict)
+    model.to(device)
+    model.eval()
+
+    results_collection = []
+    with torch.inference_mode(inference_mode):
+        if evaluate == "pdf":
+            for x_batch, x_cond_batch in zip(torch.split(condition["x"], split_size), torch.split(condition["x_cond"], split_size)):
+                _, model_logdet, prior_logprob = model(x_batch.to(device), x_cond_batch.to(device))
+                res = (model_logdet + prior_logprob).cpu()
+                results_collection.append(res)
+        elif evaluate == "sample" and "x_cond" in condition:
+            for x_cond_batch in torch.split(condition["x_cond"], split_size):
+                res = model.sample_Flow(len(x_cond_batch), x_cond_batch.to(device)).cpu()
+                results_collection.append(res)
+        elif evaluate == "sample" and "N" in condition:
+            for N_batch in _splitN(condition["N"], split_size):
+                res = model.sample_Flow(N_batch, torch.tensor([])).cpu()
+                results_collection.append(res)
+        elif evaluate == "sails" and "x_cond" in condition:
+            raise NotImplementedError("Sails sampling is not implemented yet")
+            for x_cond_batch in torch.split(condition["x_cond"], split_size):
+                res = model.sample_sails(len(x_cond_batch), x_cond_batch.to(device), condition["m"]).cpu()#Maybe each chain in parallel? But then need super many copies of the model..
+                results_collection.append(res)
+        elif evaluate == "sails" and "N" in condition:
+            raise NotImplementedError("Sails sampling is not implemented yet")
+            for N_batch in _splitN(condition["N"], split_size):
+                res = model.sample_sails(N_batch, torch.tensor([]), condition["m"]).cpu()
+                results_collection.append(res)
+
+    result = torch.cat(results_collection, dim=0)
+    queue.put((rank, result))
+    loading_result_is_fisnished.wait()
+
+    
+
+def mp_evaluate(model, condition, mode, GPUs=None ,split_size=300000, inference_mode=True):
+    """
+    Evaluate a model with multiprocessing on multiple GPUs.
+
+    Parameters
+    ----------
+    model : flowcode.NSFlow object
+        The model to evaluate.
+    condition : dict
+        The context for the evaluation. If mode is pdf, then condition must contain "x"  and "x_cond" (points and conditions).
+        If mode is sample, then condition must contain "x_cond" or "N" (N in case of an unconditional model) (condition/ Number of points).
+        If mode is sails additionally "m" the Markov chain length must be supplied.
+    mode : {"pdf", "sample", "sails"}
+        The mode of evaluation. If "pdf", the pdf of the model is evaluated. If "sample", samples from the model are drawn. 
+        If "sails", samples from the model are drawn using sails sampling (see floccode.NSFlow.sample_sails).
+    GPUs : list of ints or None (optional), deffault: None
+        The GPU(number)s to use for the evaluation. If None, the model is evaluated on the current device of the model (usually CPU) see Notes.
+
+    Returns
+    -------
+
+    result : torch.tensor
+        The result of the evaluation. If mode is pdf, the result is the log pdf of the model. Otherwise the result is the samples drawn from the model.
+
+    Notes
+    -----
+    If the model is on a GPU already it may take a few more seconds, because the model is copied to cpu and than back in this implementation.
+    Also, if the model is on a gpu that is also in GPUs, there may be less memory available, because the model launched a second time on the same gpu in this implementation.
+    """
+
+    if mode not in ["pdf", "sample", "sails"]:
+        raise ValueError("mode must be one of pdf, sample or sails")
+    
+    model_device = model.parameters().__next__().device
+    if GPUs is not None:
+        model.to("cpu")
+        model_dict = model.state_dict()
+        model_params = model.give_kwargs
+        model.to(model_device)
+
+        n_gpu = len(GPUs)
+
+        #Make condition ready for distribution over GPUs: Own dict for each GPU where the values are the splits of the original ones
+        condition_iter = [{} for _ in range(n_gpu)]
+        for key, value in condition.items():
+            if key in ["x", "x_cond"]:
+                for i, split in enumerate(torch.split(value, -(len(value)//-n_gpu))):
+                    condition_iter[i][key] = split
+            elif key in ["N"]:
+                for i, split in enumerate(_splitN(value, -(value//n_gpu))):
+                    condition_iter[i][key] = split
+            elif key in ["m"]:
+                for i in range(n_gpu):
+                    condition_iter[i][key] = value
+            else:
+                raise ValueError(f"condition must not contain {key}")
+            
+
+            
+        #Make queue and events
+        #Important Note: In case of pdf evaluations the order of the results obtained from the processes needs to be the same as the order of the points in condition["x"].
+        #But the queue order depends on the time the processes finish. Therefore, we need to keep track of which process is in which position.
+        #Therefore we supply an id to each process and return it with the result. The main process then sorts the results according to the id.
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue()
+        loading_result_is_fisnished = ctx.Event()
+
+        #Start processes
+        processes = []
+        for i, (gpu_id, condition_batch) in enumerate(zip(GPUs, condition_iter)):
+            p = ctx.Process(target=_evaluate_model_on_gpu, args=(i, gpu_id, model_dict, model_params, condition_batch, queue, loading_result_is_fisnished, mode, split_size, inference_mode))
+            p.start()
+            processes.append(p)
+
+        #Get results
+        results = [None for _ in range(n_gpu)]
+        for _ in range(n_gpu):
+            i, result = queue.get()
+            #Ensure that the results are in the right order (see above)
+            results[i] = result
+        
+        #Signal that results are loaded and the and the processes can safley terminate
+        loading_result_is_fisnished.set()
+        for p in processes:
+            p.join()
+
+        #Concatenate results
+        result = torch.cat(results, dim=0)
+
+    else:
+        #Nicer: Write this in a function that is called here and in _evaluate_model_on_gpu...
+        model.eval()
+
+        results_collection = []
+        with torch.inference_mode(inference_mode):
+            if mode == "pdf":
+                for x_batch, x_cond_batch in zip(torch.split(condition["x"], split_size), torch.split(condition["x_cond"], split_size)):
+                    _, model_logdet, prior_logprob = model(x_batch.to(model_device), x_cond_batch.to(model_device))
+                    res = (model_logdet + prior_logprob).cpu()
+                    results_collection.append(res)
+            elif mode == "sample" and "x_cond" in condition:
+                for x_cond_batch in torch.split(condition["x_cond"], split_size):
+                    res = model.sample_Flow(len(x_cond_batch), x_cond_batch.to(model_device)).cpu()
+                    results_collection.append(res)
+            elif mode == "sample" and "N" in condition:
+                for N_batch in _splitN(condition["N"], split_size):
+                    res = model.sample_Flow(N_batch, torch.tensor([])).cpu()
+                    results_collection.append(res)
+            elif mode == "sails" and "x_cond" in condition:
+                raise NotImplementedError("Sails sampling is not implemented yet")
+                for x_cond_batch in torch.split(condition["x_cond"], split_size):
+                    res = model.sample_sails(len(x_cond_batch), x_cond_batch.to(model_device), condition["m"]).cpu()#Maybe each chain in parallel? But then need super many copies of the model..
+                    results_collection.append(res)
+            elif mode == "sails" and "N" in condition:
+                raise NotImplementedError("Sails sampling is not implemented yet")
+                for N_batch in _splitN(condition["N"], split_size):
+                    res = model.sample_sails(N_batch, torch.tensor([]), condition["m"]).cpu()
+                    results_collection.append(res)
+
+        result = torch.cat(results_collection, dim=0)
+
+    if "x_cond" in condition and mode in ["sample", "sails"]:
+        result = torch.cat([result, condition["x_cond"]], dim=1)
+
+    return result
+
 
 
 class Processor():
@@ -113,16 +303,9 @@ class Processor():
         Data_p /= self.std
         return Data_p
     
-    def sample_flow(self, model, N_samples, split_size=500000):
+    def sample_flow(self, model, N_samples, GPUs=None ,split_size=500000):
         model.eval()
-        sample = []
-        with torch.inference_mode():
-            for i in range(N_samples//split_size+1):
-                sample_size = N_samples % split_size if i==0 else split_size
-                if sample_size>0:
-                    res = (model.sample_Flow(sample_size, torch.tensor([]))).cpu()
-                    sample.append(res)
-        sample = torch.vstack(sample)
+        sample = mp_evaluate(model, {"N":N_samples}, mode="sample", GPUs=GPUs, split_size=split_size)
         return sample
     
     def sample_to_Data(self, raw):
@@ -566,8 +749,6 @@ class Processor_cond():
             Array containing the sample of the flow for the given condition.
         """
 
-        #Device the model is on
-        device = model.parameters().__next__().device
 
         #Format: Contition is (N,n_cond) array cond_indices has length n_cond
         Cond_flow = np.copy(Condition)
@@ -582,23 +763,14 @@ class Processor_cond():
 
         Cond_flow = torch.from_numpy(Cond_flow).type(torch.float)
 
-        if GPUs is None:   
-            #Evaluate the model, use only stacks of split_size because GPU memory is limited
-            #Here e.g. sampling 3*10^7 points with 10 components each, with 3*10^7 points already occupied by the condition + model on GPU needs more than the 10GB available
-            model.eval()
-            sample = []
-            with torch.inference_mode():
-                for split in torch.split(Cond_flow, split_size):
-                    res = (model.sample_Flow(split.shape[0], split.to(device))).cpu() #Unsqueezed input
-                    sample.append(res)
-            sample = torch.vstack(sample)
-        else:
-            sample = parallel_sample(model, Cond_flow, GPUs, split_size=split_size)
+        #Sample the flow
 
-        return torch.hstack((sample, torch.from_numpy(Condition).type(torch.float)))
+        sample = mp_evaluate(model, {"x_cond": Cond_flow}, mode="sample", GPUs=GPUs, split_size=split_size)
+
+        return sample
     
     #Function to correctly evaluate the pdf of the flow
-    def log_prob(self, model, data, cond_indices, split_size=300000):
+    def log_prob(self, model, data, cond_indices, GPUs, split_size=300000, inference_mode=True):
         """
         Evaluates the log probability of the flow for a given data sample.
         The evaluation is done on the GPU in batches of split_size, because the GPU memory is limited.
@@ -614,8 +786,12 @@ class Processor_cond():
             Array containing the data sample with conditions.
         cond_indices : array
             Array containing the indices of the components of the condition.
+        GPUs : list of ints
+            List of the GPUs to use for evaluation.
         split_size : int (optional), default: 300000
             The size of the batches the evaluation is done in.
+        inference_mode : bool (optional), default: True
+            Wheather to use torch.inference_mode() for evaluation. Will be faster, more memory efficient but does not allow gradients to be computed (e.g. dpdf(x)/dx). (?- as far as i know)
         
         Returns
         -------
@@ -626,7 +802,7 @@ class Processor_cond():
         if self.trf_logdet is None:
             raise ValueError("Derivatives not specified in Data_to_flow, cannot evaluate log_prob")
         
-        device = model.parameters().__next__().device
+        #device = model.parameters().__next__().device
 
         mask_cond = np.isin(np.arange(data.shape[1]), cond_indices)
         #Format: data is (N,n) array
@@ -667,14 +843,10 @@ class Processor_cond():
         logdet_transform = torch.from_numpy(logdet_transform).type(torch.float)
 
         model.eval()
-        log_prob = []
-        with torch.inference_mode():
-            for split in torch.split(x_flow, split_size):
-                sample, model_logdet, prior_logprob = model(split.to(device), x_cond_flow.to(device))
-                res = (model_logdet + prior_logprob + logdet_transform).cpu()
-                log_prob.append(res)
         
-        log_prob = torch.hstack(log_prob)
+        log_prob = mp_evaluate(model, {"x": x_flow, "x_cond": x_cond_flow}, mode="pdf", GPUs=GPUs, split_size=split_size, inference_mode=inference_mode)
+
+        log_prob += logdet_transform
 
         return log_prob.numpy()
 

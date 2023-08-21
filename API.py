@@ -288,15 +288,15 @@ class GalacticFlow():
     def sample_galaxy(self, N_stars, parameters, split_size=300000, GPUs=None):
         """
         Sample a galaxy with a desired number of stars for the given parameters.
-        This is a userfrienldy way to sample from the model.
+        This is a userfrienldy way to sample from the model. Allows also sampling several galaxies at once, see Notes.
 
         Parameters
         ----------
 
-        N_stars : int
+        N_stars : int or list of ints
             Number of stars that should be sampled for this galaxy.
-        parameters : array
-            The parameters of the galaxy to sample. Must be of shape (self.n_cond,), where n_cond is the number of conditions.
+        parameters : np.array or list of arrays
+            The parameters of the galaxy(/-ies) to sample. Every array must be of shape (self.n_cond,), where n_cond is the number of conditions.
         split_size : int, (optional), default: 300000
             A technical parameter. The sample is queued in chunks of size split_size for sampling. This is done to avoid memory errors on GPUs, if the sample is too large.
         GPUs : list of ints, (optional), default: None
@@ -304,8 +304,20 @@ class GalacticFlow():
         
         Returns
         -------
-        galaxy : array
-            The sampled galaxy. Has shape (N_stars, self.n_dim+self.n_cond), where n_dim is the dimension of the data.
+        galaxy(/-ies) : array or list of arrays
+            The sampled galaxy(/-ies). A galaxy has shape (N_stars, self.n_dim+self.n_cond), where n_dim is the dimension of the data.
+
+        Notes
+        -----
+        The base functionality is to give 1 galaxy for 1 set of n_cond parameters. One could just loop over this method with the desired parameters to sample multiple galaxies.
+        However, when sampling multiple galaxies directly with this method, the sample is drawn as one big sample and then split back into the individual galaxies requested.
+        This is usually way more efficient for reasons of parallelization, initialization and python being slow.
+        There are 4 'modes' of input:
+        1. N_stars is an int and parameters is an array of shape (self.n_cond,). This is the base functionality. Will return the single galaxy requested.
+        2. N_stars is a list of ints and parameters is a list of arrays of shape (self.n_cond,). Will return a list of galaxies. i-th galaxy has N_stars[i] stars and parameters[i] parameters.
+        3. N_stars is an int and parameters is a list of arrays of shape (self.n_cond,). Will return a list of galaxies. All galaxies have N_stars stars and the i-th galaxy has parameters[i] parameters.
+        4. N_stars is a list of ints and parameters is an array of shape (self.n_cond,). Will return a list of galaxies. All galaxies have parameters parameters and the i-th galaxy has N_stars[i] stars.
+
 
         Examples
         --------
@@ -317,7 +329,7 @@ class GalacticFlow():
         #Model is learnt on 10D data space (x,y,z,vx,...)
         >>> model.n_dim
         10
-        #Sample a galaxy with total stellar mass of 10^10 M_sun and tau50 of 6 Gyr
+        #Sample a single galaxy with total stellar mass of 10^10 M_sun and tau50 of 6 Gyr
         >>> parameters = np.array([10^10,6])
         #Sample 10^6 stars for this galaxy
         >>> galaxy = model.sample_galaxy(10^6, parameters, GPUs=use_gpus)
@@ -325,10 +337,50 @@ class GalacticFlow():
         (10^6, 12)
         >>> galaxy[0]
         array([0.,0.5,1.,0.,2.5,0.,0.,10.5,1000.,0.,10^10,6])
+        #Sample 3 galaxies 1: 10^10 M_sun, 6 Gyr, 2: 10^11 M_sun, 6 Gyr, 3: 10^10 M_sun, 8 Gyr
+        >>> parameters = [np.array([10^10,6]), np.array([10^11,6]), np.array([10^10,8])]
+        #Sample 10^6 stars for each galaxy
+        >>> galaxy1, galaxy2, galaxy3 = model.sample_galaxy(10^6, parameters, GPUs=use_gpus)
+        #Saple with different number of stars for each galaxy
+        >>> galaxy1, galaxy2, galaxy3 = model.sample_galaxy([10^6,10^7,10^6], parameters, GPUs=use_gpus)
         """
-        galaxy = self.general_sample(np.tile(parameters, (N_stars,1)), split_size=split_size, GPUs=GPUs)
+        #Get all parameters in the right shape
+        #Check if parameters are 1 array or list of arrays, be error tolerant
+        #If one time this will allow empty arrays (unconditional sampling), just check if len(parameters) == 0
+        multiple_params_given = len(np.array(parameters).shape) > 1
+        multiple_N_stars_given = not isinstance(N_stars, int)
 
-        return galaxy
+        par_sample = np.array(parameters)
+        N_stars = np.array(N_stars)
+
+        if not multiple_params_given:
+            #For np.repeat to work along axis 0, we need to reshape the array
+            par_sample = par_sample.reshape(1,-1)
+        
+        if not multiple_params_given and multiple_N_stars_given:
+            #If only one set of parameters is given, but multiple N_stars, interpret as same galaxy with different number of stars (even if that makes not as much sense)
+            N_sample = np.sum(N_stars)
+        else:
+            N_sample = N_stars
+
+        par_sample = np.repeat(par_sample, N_sample, axis=0)
+
+        sample = self.general_sample(par_sample, split_size=split_size, GPUs=GPUs)
+
+        #Now split the sample into the individual galaxies
+        if multiple_params_given and not multiple_N_stars_given:
+            #If multiple sets of parameters are given, but only one N_stars, interpret as different galaxies with same number of stars
+            N_split = np.repeat(N_stars, len(parameters))
+        else:
+            N_split = N_stars
+        
+        galaxies = self.processor.galaxysplit(sample, N_split)
+
+        if not multiple_params_given and not multiple_N_stars_given:
+            #If only one set of parameters and one N_stars is given, return only one galaxy
+            galaxies = galaxies[0]
+
+        return galaxies
     
     def general_pdf(self, X, split_size=300000, GPUs=None):
         """
