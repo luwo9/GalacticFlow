@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import itertools
 import time
+from pandas import DataFrame
 
 import copy
 #import device_use
@@ -363,10 +364,18 @@ class NSF_CL2(nn.Module):
             
         return torch.hstack((second,first)), logdet
         
+# ---- The following functions are needed for NF-sails sampling ----
+
+
+
+
+# ---- End of functions needed for NF-sails sampling ----
+
 class NSFlow(nn.Module):
     def __init__(self, n_layers, dim_notcond, dim_cond, CL, **kwargs_CL):
         super().__init__()
         self.dim = dim_notcond
+        self.dim_cond = dim_cond
 
 
         '''coupling_layers = itertools.repeat(CL(dim_notcond, dim_cond, **kwargs_CL), n_layers)
@@ -412,6 +421,106 @@ class NSFlow(nn.Module):
     def sample_Flow(self, number, x_cond):
         return self.backward(self.prior.sample(torch.Size((number,))), x_cond)[0]
     
+    #NF sails sampling (Sampling with Langevin dynamics in the latent space) both local and global exploration
+    #Local is RMMALA, global is independent MH
+
+    def sample_sails(self, number, x_cond, chain_length, time_step, probability):
+        if number != x_cond.shape[0]:
+            raise ValueError("Number of samples and number of conditions must be the same")
+        #We it would be optimal to have only one markov chain, but:
+        #1. We need different markov chains for each condition as the pdf is different
+        #2. We can expect a large incease in speed if we split the sampling into different markov chains (while sacrificing some accuracy)
+
+        #Determine the number of chains needed
+        #Number of unique conditions in x_cond
+        unique_cond, n_unique_cond = torch.unique(x_cond, dim=0, return_counts=True)
+        #Number of chains needed for each condition if chain length is chain_length
+        n_chains = torch.ceil(n_unique_cond/chain_length).int()
+        n_chains_total = n_chains.sum()
+        #How many are over the desired amount, throw them away later
+        n_too_many = n_chains*chain_length - n_unique_cond
+
+        #Now prepare the conditions for sampling, one for each chain
+        x_cond_sample = torch.repeat_interleave(unique_cond, n_chains, dim=0)
+
+        #Prepare the samples
+        samples = torch.zeros(chain_length+1, n_chains_total, self.dim).to(x_cond.device)
+
+        #Draw first sample for each chain
+        z_k = self.sample_Flow(n_chains_total, x_cond_sample)
+        samples[0] = z_k
+
+        for k in range(chain_length):
+            z_k = samples[k]
+            #Choose kernel by uniform probability
+            u = torch.rand(n_chains_total)
+            #Local or global exploration
+            z_k_plus_1 = torch.where(u<probability, self._sample_RMMALA(z_k, x_cond_sample, time_step).T, self.sample_I_MH(z_k, x_cond_sample).T).T
+            #Store samples
+            samples[k+1] = z_k_plus_1
+
+        #For each condition, throw away the extra samples
+        #(not implemented yet....) #Maybe in loop throw away last markov samples from last chain (i.e. set nan)
+        #Get the chain indices with cumsum n_chains
+        #Append condition (x_cond_sample) to samples (for sorting)
+        samples = torch.cat((samples, x_cond_sample.repeat(chain_length+1,1,1)), dim=-1)
+        #Stack together while ignoring the first sample
+        samples = samples[1:].reshape(-1, self.dim+self.dim_cond)
+
+        #Restore the original order (sort by condition)
+        #Get map from sorted to original
+        arg_order_x_cond = torch.argsort(torch.argsort(x_cond, dim=0)[:,0], dim=0)
+        #Sort samples by condition
+        argsort_samples = torch.argsort(samples[:,-self.dim_cond:], dim=0)[:,0]
+        samples = samples[argsort_samples]
+        #Sort back to original order (apply map)
+        samples = samples[arg_order_x_cond]
+
+        samples = samples[:, :-self.dim_cond]
+        return samples
+    
+    #RMMALA sampling
+    def _sample_RMMALA(self, z_k, x_cond, time_step):
+        #Draw candidate
+        xi = self.prior.sample(z_k[0].shape)
+        #Compute score
+        score = self._latent_score(z_k, x_cond)
+        z_prime = 1
+
+
+    def _latent_score(self, z, x_cond):
+        #(s^tilde_Z(z))
+        #s^tilde_Z(z) = J^-1(z)*grad_z log q^tilde_Z(z) = grad_x log q_X(x)
+        #i.e. the latent score is equal to the score of q_X(x) in the original space
+        x = self.backward(z, x_cond)[0]
+        with torch.inference_mode(False):
+            x = x.clone()
+            x.requires_grad_(True)
+            #To ignore model parameter gradients and only track x gradients:
+            for param in self.parameters():
+                param.requires_grad_(False)
+            _, logdet, prior_z_logprob = self.forward(x, x_cond)#Here model gradients are still tracked, which is not needed
+            log_prob = logdet + prior_z_logprob
+            score = torch.autograd.grad(log_prob, x, grad_outputs=torch.ones_like(log_prob))[0]
+            score = score.detach()
+            for param in self.parameters():
+                param.requires_grad_(True)
+        return score
+    
+    def jacobian_matrix(self, z, x_cond, mode="forward"):
+        #Compute Jacobian of forward or backward transformation
+        #Just use automatic differentiation. Parts of J coud be tracked analytically, but this is not implemented
+        #Since autograd is anyways used for The other parts and we ptoentially have a lot of layers i.e. a lot of matrix multiplications, this should not be too slow (i hope)
+        
+        #First turn of gradient tracking for model parameters
+        for param in self.parameters():
+            param.requires_grad_(False)
+
+        #Turn off inference mode
+        with torch.inference_mode(False):
+            True
+
+    
     def to(self, device):
         super().to(device)
         self.prior = torch.distributions.Normal(torch.zeros(self.dim).to(device), torch.ones(self.dim).to(device))
@@ -428,12 +537,75 @@ def _get_right_hypers(model_params):
     return kwargs_dict
 
 
-def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-2, batch_size=1024, loss_saver=None, gamma=0.998, give_textfile_info=False, print_fn=None, **print_fn_kwargs):
+def train_flow(flow_obj:NSFlow, data:DataFrame, cond_names:list, epochs, lr=2*10**-2, batch_size=1024, loss_saver=None, checkpoint_dir=None, gamma=0.998, give_textfile_info=False, optimizer_obj=None):
+    """
+    Train a normalizing flow model on the given data.
+
+    Parameters
+    ----------
+
+    flow_obj : NSFlow instance
+        The flow model to train.
+    data : pd.DataFrame
+        The data to train on. IMPORTANT: Although colums are usually safely regarded to by name, here the order of the colums is important:
+        The order of 'data.columns' will be the order of any samples the model generates, it will not use the names of the columns.
+        Thus make sure to remember it, see example below.
+    cond_names : list of str
+        The names of the conditional variables.
+    epochs : int
+        The number of epochs to train.
+    lr : float (optional), default : 2*10**-2
+        The initial learning rate.
+    batch_size : int (optional), default : 1024
+        The batch size to use.
+    loss_saver : list (optional), default : None
+        A list to store the loss values in. Values are appended live during training.
+    checkpoint_dir : str (optional), default : None
+        The directory to save checkpoints in. If None, no checkpoints are saved. E.g. "saves/checkpoints/".
+    gamma : float (optional), default : 0.998
+        The learning rate decay factor of the exponential learning rate scheduler. Decreases the learning rate by a factor of gamma every 10 batches,
+        or every 120 batches once the learning rate is below 3*10**-6.
+    give_textfile_info : str (optional), default : False
+        If not False, the given string is used as the suffix of a textfile in which information about the training is saved.
+    optimizer_obj : torch.optim.Optimizer instance (optional), default : None
+        The optimizer to use. If None, the RAdam optimizer is used. E.g. torch.optim.Adam(flow_obj.parameters(), lr=lr).
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> components = ["x", "y", "z", "M_tot", "average_age"]
+    >>> conditions = ["M_tot", "average_age"]
+    >>> data = np.random.normal(size=(1000000, len(components)))
+    >>> data = pd.DataFrame(data, columns=components)
+    >>> flow_obj = NSFlow(8, dim_notcond=3, dim_cond=2, ...)
+    >>> losses = []
+    >>> train_flow(flow_obj, data, conditions, epochs=100, loss_saver=losses)
+    >>> sample = flow_obj.sample_Flow(1000, torch.from_numpy(data[conditions].values).type(torch.float)).numpy()#will crate a numpy array of shape (1000, 3):
+    >>> sample
+    array(...)
+    >>> #Columns are in the order of the components, but unnamed.
+    >>> sample = pd.DataFrame(sample, columns=components)
+    >>> sample
+    x         y         z
+    ...
     
+    Note that the orer already matterd when passing the conditions to sample_Flow.
+    """
+    
+    #Device the model is on
     device = flow_obj.parameters().__next__().device
+
     #Infos to printout
-    
     n_steps = data.shape[0]*epochs//batch_size+1
+
+    #Get index based masks for conditional variables
+    mask_cond = np.isin(data.columns.to_list(), cond_names)
+    mask_cond = torch.from_numpy(mask_cond).to(device)
+    #Convert DataFrame to tensor (index based)
+    data = torch.from_numpy(data.values).type(torch.float)
     
     data_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=True)
     
@@ -444,25 +616,25 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
     
     lr_schedule = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=gamma)
     
-    start_time = time.perf_counter()
 
     if not give_textfile_info==False:
         with open(f"status_output_training_{give_textfile_info}.txt", mode="w+") as f:
             f.write("")
     
-    #Masks for conditional variable
-    mask_cond = torch.full((data.shape[1],), False)
-    mask_cond[cond_indx] = True
-    mask_cond = mask_cond.to(device)
+
     #Safe losses
     losses = []
 
+    #Total number of steps
     ct = 0
+    #Total number of checkpoints
     cp = 0
+
+    start_time = time.perf_counter()
+
     for e in range(epochs):
         for i, batch in enumerate(data_loader):
-            ##Debug
-            #print("new batch")
+            
             x = batch.to(device)
             
             #Evaluate model
@@ -472,11 +644,14 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
             loss = -torch.mean(logdet+prior_z_logprob)
             losses.append(loss.item())
             
-            #zero_grad() on model (sometimes safer that optimizer.zero_grad())
+            #Set gradients to zero
             optimizer.zero_grad()
+            #Compute gradients
             loss.backward()
+            #Update parameters
             optimizer.step()
             
+            #Every 100 steps print out some info to console or file and save to loss history if specified
             if ct % 100 == 0:
                 if not give_textfile_info==False:
                     with open(f"status_output_training_{give_textfile_info}.txt", mode="a") as f:
@@ -486,17 +661,21 @@ def train_flow(flow_obj, data, cond_indx, epochs, optimizer_obj=None, lr=2*10**-
                 if loss_saver is not None:
                     loss_saver.append(np.mean(losses[-50:]))
             
-            if ct % 5000 == 0 and not ct == 0:
-                torch.save(flow_obj.state_dict(), f"saves/checkpoints/checkpoint_{cp%2}.pth")
+            #Every 5000 steps save model and loss history (checkpoint)
+            if checkpoint_dir != None and ct % 5000 == 0 and not ct == 0:
+                torch.save(flow_obj.state_dict(), f"{checkpoint_dir}checkpoint_{cp%2}.pth")
                 curr_time = time.perf_counter()
-                np.save(f"saves/checkpoints/losses_{cp%2}.npy", np.array(loss_saver+[curr_time-start_time]))
-                cp+=1
+                np.save(f"{checkpoint_dir}losses_{cp%2}.npy", np.array(loss_saver+[curr_time-start_time]))
+                cp += 1
             
-            ct+=1
+            ct += 1
+
+            #Decrease learning rate every 10 steps until it is smaller than 3*10**-6, then every 120 steps
             if lr_schedule.get_last_lr()[0] <= 3*10**-6:
                 decrease_step = 120
             else:
                 decrease_step = 10
 
+            #Update learning rate every decrease_step steps
             if ct % decrease_step == 0:
                 lr_schedule.step()

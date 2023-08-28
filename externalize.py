@@ -1,7 +1,8 @@
 import numpy as np
+import pandas as pd
 #Externalized functions for condition selection and galaxy selection here to make the mai file, where this is normally expected to be, more readable.
 #And also to give examples of how this works.
-def MW_like_galaxy(galaxy, N_star, M_star, M_dm_g):
+def _MW_like_galaxy(galaxy):
     """
     Selects galaxies that are Milky Way like.
     Namely the galaxies have to have stellar mass plus dark matter mass greater than $5\cdot10^11$.
@@ -9,14 +10,8 @@ def MW_like_galaxy(galaxy, N_star, M_star, M_dm_g):
     Parameters
     ----------
 
-    galaxy : array
-        Array containing the data of one galaxy.
-    N_star : int
-        Number of stars in the galaxy.
-    M_star : float
-        Total stellar mass of the galaxy.
-    M_dm_g : float
-        Total dark matter mass of the galaxy.
+    galaxy : dict
+        Dict containing the data of one galaxy. See Processor_cond for more information.
 
     Returns
     -------
@@ -24,83 +19,78 @@ def MW_like_galaxy(galaxy, N_star, M_star, M_dm_g):
     bool
         True if the galaxy is considered Milky way like, False otherwise.
     """
+    M_star = galaxy["galaxy"]["M_stars"]
+    M_dm_g = galaxy["galaxy"]["M_dm"]
     return M_star+M_dm_g > 5e11
 
 
 #Function simmilar to MW_like_galaxy, but forbids galaxies with a certain dm mass. (Leave one/multiple out)
-def construct_MW_like_galaxy_leavout(M_dm_leavout):
+def construct_MW_like_galaxy_leavout(key, forbidden_values):
     """
-    Constructs a function that selects galaxies that are Milky Way like, but forbids galaxies with selected dark matter masses.
-    Intended to un-select galaxies with a certain dark matter mass, to leave them out of the training.
-    Dark matter mass is a good tag to chose a galaxy because it does not change with any constrains or simmilar.
+    Constructs a function that selects galaxies that are Milky Way like, but forbids galaxies with certain values of a certain key in the galaxy["galaxy"] dict.
+    Intended to un-select galaxies with a certain property, to leave them out of the training.
+    Examples would be to leave out galaxies with certain unique id(s), or certain dark matter mass(es).
 
     Parameters
     ----------
 
-    M_dm_leavout : array or list
-        Array or list of dark matter masses that should be excluded from the selection.
+    key : str
+        Key of the galaxy["galaxy"] dict, that should be used to determine if a galaxy is forbidden.
+    forbidden_values : array or list
+        Values of the key, that shoulbe be excluded.
+
 
     Returns
     -------
 
     function
-        Function that selects galaxies that are Milky Way like, but forbids galaxies with selected dark matter masses.
+        Function that selects galaxies that are Milky Way like, but forbids galaxies with certain values of a certain key in the galaxy["galaxy"] dict.
     """
-    print("Remember it's best to once choose a subset to view, use those DM masses and choose a 2nd subset for training. SORT Mdm before choosing indices")
-    def MW_like_galaxy_leavout(galaxy, N_star, M_star, M_dm_g):
+    #print("Remember it's best to once choose a subset to view, use those DM masses and choose a 2nd subset for training. SORT Mdm before choosing indices")
+    def MW_like_galaxy_leavout(galaxy):
         """
-        Selects galaxies that are Milky Way like, but forbids galaxies with selected dark matter masses.
+        Selects galaxies that are Milky Way like, but forbids galaxies with certain values of a certain key in the galaxy["galaxy"] dict.
+        For the use as use_fn in choose_subset.
         Wheater a galaxy is Milky Way like is determined by MW_like_galaxy.
 
         Parameters
         ----------
 
-        galaxy : array
-            Array containing the data of one galaxy.
-        N_star : int
-            Number of stars in the galaxy.
-        M_star : float
-            Total stellar mass of the galaxy.
-        M_dm_g : float
-            Total dark matter mass of the galaxy.
+        galaxy : dict
+            Dict containing the data of one galaxy.
 
         Returns
         -------
 
         bool
-            True if the galaxy is considered Milky way like and has not forbidden dark matter mass, False otherwise.
+            True if the galaxy is considered Milky way like and has none of forbidden values, False otherwise.
         """
         #Test if is MW like
-        is_MW_like = MW_like_galaxy(galaxy, N_star, M_star, M_dm_g)
-
+        is_MW_like = _MW_like_galaxy(galaxy)
         #Test if has forbidden dm mass
-        is_included = np.isin(M_dm_g, M_dm_leavout, invert=True).item()
+        galaxy_value = galaxy["galaxy"][key]
+        is_included = np.isin(galaxy_value, forbidden_values, invert=True).item()
 
         return is_MW_like and is_included
     
     return MW_like_galaxy_leavout
 
 
-def all_galaxies(galaxy, N_star, M_star, M_dm_g):
-    """
-    Selects all galaxies.
-    See MW_like_galaxy for more information.
-    """
-    return True
 
 
-def construct_all_galaxies_leavout(M_dm_leavout):
+def construct_all_galaxies_leavout(key, forbidden_values):
     """
-    Constructs a function that selects all galaxies, but forbids galaxies with selected dark matter masses.
+    Constructs a function that selects all galaxies, but forbids certain values of a certain key in the galaxy["galaxy"] dict.
     See construct_MW_like_galaxy_leavout for more information.
     """
-    def all_galaxies_leavout(galaxy, N_star, M_star, M_dm_g):
+    def all_galaxies_leavout(galaxy):
         """
-        Selects all galaxies, but forbids galaxies with selected dark matter masses.
+        Selects all galaxies, but forbids certain, predetermined, galaxies.
         See MW_like_galaxy_leavout for more information.
         """
         #Test if has forbidden dm mass
-        is_included = np.isin(M_dm_g, M_dm_leavout, invert=True).item()
+        galaxy_value = galaxy["galaxy"][key]
+        is_included = np.isin(galaxy_value, forbidden_values, invert=True).item()
 
         return is_included
     
@@ -109,42 +99,63 @@ def construct_all_galaxies_leavout(M_dm_leavout):
 
 #Condition functions, use intended as cond_fn in choose_subset
 
-def cond_M_stars(galaxy, N_star, M_star, M_dm_g):
+def cond_M_stars(galaxy):
     """
     Simply returns the stellar mass as condition. For the use as cond_fn in choose_subset.
 
     Parameters
     ----------
 
-    galaxy : array
-        Array containing the data of one galaxy.
-    N_star : int
-        Number of stars in the galaxy.
-    M_star : float
-        Total stellar mass of the galaxy.
-    M_dm_g : float
-        Total dark matter mass of the galaxy.
+    galaxy : dict
+        Dict containing the data of one galaxy.
 
     Returns
     -------
 
-    Condition : tuple of floats
+    Condition : pd.DataFrame
         Conditions of the galaxy, in this case the stellar mass.
     """
-    return (M_star,)
+    M_star = galaxy["galaxy"]["M_stars"]
+    return pd.DataFrame({"M_stars": [M_star]})
 
-def cond_M_stars_2age_avZ(galaxy, N_star, M_star, M_dm_g):
+def cond_M_stars_2age_avZ(galaxy):
     """
     Returns a condition consisting of the 4 values stellar mass, median age, 10th percentile age and mean metallicity.
     For the full documentation of such a function see cond_M_stars.
     """
-    tau50 = np.median(galaxy[:, 9])
-    tau10 = np.percentile(galaxy[:, 9], 10)
-    Z_av = np.mean(galaxy[:, 6])
-    
-    return (M_star, tau50, tau10, Z_av)
+    stars = galaxy["stars"]
+    tau50 = np.median(stars["age"])
+    tau10 = np.percentile(stars["age"], 10)
+    Z_av = np.mean(stars["Z"])
+    M_star = galaxy["galaxy"]["M_stars"]
+    return pd.DataFrame({"M_stars": [M_star], "tau50": [tau50], "tau10": [tau10], "Z_av": [Z_av]})
+
 
 #Functions used for data preperation in Data_to_flow
+
+def logdet_log10(x:pd.DataFrame, _):
+    """
+    Calculates the logartihm of the determinant of the Jacobian of the transformation x -> log10(x).
+    It is given by $1/\ln(10) \sum_i 1/x_i$. The sum is taken along the dimension of x.
+
+    Parameters
+    ----------
+    x : pd.DataFrame
+        Data to be transformed.
+
+    Returns
+    -------
+
+    array
+        Array with the logartihm of the determinant of the Jacobian of the transformation x -> log10(x).
+    """
+    x = x.values
+    jacobian = 1/np.log(10)*1/x
+    log_det_jacobian = np.log(jacobian).sum(axis=1)
+    return log_det_jacobian
+
+
+#Old
 def tanh_smoothing(x):
     """
     Applies a tanh smoothing to the data, following https://arxiv.org/pdf/2205.01129.pdf. This avoids the flow to be trained on sharp edges.
