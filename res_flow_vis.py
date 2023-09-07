@@ -43,7 +43,6 @@ def cornerplot_hist(data_true, data_flow, names, color="individual", color_pass=
     perserve_aspect_grid : list of tuples of ints, optional, default: x_and_v
         The cornerplots for which an aspect ratio should be preserved. Each tuple is a pair of indices for the components of the respective plot. E.g. (0,1) is the plot for x and y.
     """
-    raise NotImplementedError("This function is not yet implemented")
     #Check all inputs
     if color not in ["individual", "global"]:
         raise ValueError("color must be 'individual' or 'global'")
@@ -165,7 +164,7 @@ def residual_combined(C):
     return (mean_data-mean_flow)/mean_data
 
 
-def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=300, color_pass="local", N_unit="starsperbin", Mass = None):
+def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=300, color_pass="local", N_unit="starsperbin"):
     """
     Plot the results of the flow for a single galaxy. Makes 4 plots:
     1. Corner plot of the data and the flow in the x,y,z plane
@@ -177,9 +176,11 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
     ----------
 
     data_true_ : np.ndarray
-        The (true) galaxy data, shape (N, 10)
+        Dictionary containing the data for the galaxy. Must have the keys "stars" and "galaxy".
+        "stars" must be a pandas DataFrame with the columns "x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age".
+        If N_unit is "massperkpc", "galaxy" dict must have the key "M_stars" with the mass of the galaxy.
     data_flow_ : np.ndarray
-        The flow sample for the galaxy, shape (N, 10)
+        Dictionary containing the flow sample for the galaxy. See data_true_.
     label : str, optional, default: ""
         Label to add to the plot titles, when saving
     format_ : str, optional, default: "png"
@@ -193,18 +194,35 @@ def get_result_plots(data_true_, data_flow_=None, label="", format_="png", dpi=3
         Unit for the density of the N plots. "starsperbin" means the number of stars per bin,
         "starsperkpc" means the number of stars per kpc^2 and "massperkpc" means the mass of stars per kpc^2.
         If "massperkpc" is chosen, the Mass parameter must be given.
-    Mass : tuple of floats or None, optional, default: None
-        The mass of the galaxy and flow in solar masses. Only used if N_unit is "massperkpc"
     """
-    
-    if N_unit == "massperkpc" and Mass is None:
-        raise ValueError("Mass must be given if N_unit is massperkpc")
 
-    data_true = data_true_.T
+    #This code is fully based on old data structure, this code just functions as an adapter
+    #The function could be fully rewritten to use the new data structure, but that would be a lot of work that's not really necessary
+
+    expected_df_names = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age"]
+    if not all([name in data_true_["stars"].columns for name in expected_df_names]):
+        raise ValueError(f"data_true_ must have the columns {expected_df_names}")
+    if data_flow_ is not None and not all([name in data_flow_["stars"].columns for name in expected_df_names]):
+        raise ValueError(f"data_flow_ must have the columns {expected_df_names}")
+    
+    if N_unit not in ["starsperbin", "starsperkpc", "massperkpc"]:
+        raise ValueError("N_unit must be 'starsperbin', 'starsperkpc' or 'massperkpc'")
+
+    if N_unit == "massperkpc":
+        try:
+            Mass = (data_true_["galaxy"]["M_stars"],)
+            if data_flow_ is not None:
+                Mass += (data_flow_["galaxy"]["M_stars"],)
+        except KeyError:
+            raise ValueError("Mass must be given if N_unit is 'massperkpc'")
+
+    #Translate to tansposed numpy arrays of stars with exactly expected_df_names columns/rows and are transposed
+    data_true = data_true_["stars"][expected_df_names].values.T
     if data_flow_ is None:
         data_flow = None
     else:
-        data_flow = data_flow_.T
+        data_flow = data_flow_["stars"][expected_df_names].values.T
+
     names = ['x', 'y', 'z', 'vx', 'vy', 'vz', 'metals', '[Fe/H]', '[O/Fe]', 'age/Gyr']
     
     
@@ -707,17 +725,15 @@ def plot_conditional(Galaxies, Masses, type, label, show="page", scale=None, gri
 #Histogram for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram.
 #Coloring is done by sampling from a colormap in log, and the colorbar is placed at the bottom of the figure.
 
-def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridis", log=False, manual_cut_dict=None):
+def plot_conditional_histograms(Galaxies, label, bins=300, cmap="viridis", log=False, manual_cut_dict=None):
     """
     Plots histograms for each property r,z,abs(v),Z,FeH,OFe, age. The galaxies are color coded by their mass M, and in the same histogram, respectivley.
 
     Parameters
     ----------
 
-    Galaxies : list of numpy arrays
-        Data of the Galaxies to be plotted.
-    Massses : numpy array
-        Massses containing the mass of each galaxy in the same order as the Galaxies.
+    Galaxies : list of dicts
+        Data of the Galaxies to be plotted. List of dicts, each dict containing the properties of one galaxy.
     label : str
         Label to be used for the file name.
     bins : int, optional, dfault: 300
@@ -740,6 +756,12 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
     For age only a sixth of the given bins is used to reduce noise.
     """
 
+    #Transform to old data format, see get_result_plots
+    expected_df_names = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age"]
+    Masses = np.array([galaxy["galaxy"]["M_stars"] for galaxy in Galaxies])
+    Galaxies = [galaxy["stars"][expected_df_names].values for galaxy in Galaxies]
+
+
     if manual_cut_dict is None:
         manual_cut_dict = {}
 
@@ -748,7 +770,7 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
         raise ValueError("Invalid key in manual_cut_dict. Keys must be r, z, v, Z, feh, ofe or age.")
 
     colormap = matplotlib.colormaps[cmap]
-    c_norm = matplotlib.colors.LogNorm(vmin=Massses.min(), vmax=Massses.max())
+    c_norm = matplotlib.colors.LogNorm(vmin=Masses.min(), vmax=Masses.max())
     scalar_map = matplotlib.cm.ScalarMappable(norm=c_norm, cmap=colormap)
 
     plottables = ["r/kpc", "z/kpc", "|v|/km/s", "Z", "[Fe/H]", "[O/Fe]", "age/Gyr"]
@@ -758,7 +780,7 @@ def plot_conditional_histograms(Galaxies, Massses, label, bins=300, cmap="viridi
     fig, axs = plt.subplots(*plot_layout, figsize=figsize, layout="constrained")
     axs = axs.ravel()
 
-    for galaxy, mass in zip(Galaxies, Massses):
+    for galaxy, mass in zip(Galaxies, Masses):
         for i, (ax, name, quantity) in enumerate(zip(axs, plottables, valid_keys)):
             if i==0:
                 #Get cylindrical radius
@@ -804,9 +826,9 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
 
     Parameters
     ----------
-    Data_colection : tuple
-        Data to be plotted. Expected form is (Galaxies, Masses, Galaxies, Masses, ...).
-        Galaxies is a list of arrays, each array containing the properties of one galaxy. Masses is an array of the masses of the galaxies, used for sorting and labeling.
+    Data_colection : list of dict
+        Data to be plotted. Expected form is (Galaxies1, Galaxies2, ...)
+        Galaxies is a list of dicts, each containing the properties of one galaxy. Must contain "galaxy" key with "M_stars" key.
         Makes seperate plots for each tuple of Galaxies and Masses, but allows to share grid and coloring.
     type : str, optional, deault: "N"
         Type of data to be plotted. The default is "N".
@@ -842,6 +864,13 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
         Weather to use a global grid for all galaxies within a plot. If False, the grid is determined for each galaxy individually.
     
     """
+    #Transform to old data format, see get_result_plots
+    Masses_col = [[galaxy["galaxy"]["M_stars"] for galaxy in Galaxies] for Galaxies in Data_colection]
+    expected_df_names = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age"]
+    Data_colection = [[galaxy["stars"][expected_df_names].values for galaxy in Galaxies] for Galaxies in Data_colection]
+
+    Data_colection = tuple(itertools.chain(*zip(Data_colection, Masses_col)))
+
     #Check input
     #Type
     if type not in ["feh", "ofe", "N"]:

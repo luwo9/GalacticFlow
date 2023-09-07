@@ -19,7 +19,7 @@ train_loss_saver = []
 
 start = time.perf_counter()
 
-flowcode.train_flow(model, train_data, train_parameters[:-4].astype("int"), int(train_parameters[-4]), lr=train_parameters[-3], batch_size=int(train_parameters[-2]), loss_saver=train_loss_saver, gamma=train_parameters[-1], give_textfile_info=file_ext)
+flowcode.train_flow(model, train_data, train_parameters[:-4].tolist(), int(float(train_parameters[-4])), lr=float(train_parameters[-3]), batch_size=int(float(train_parameters[-2])), loss_saver=train_loss_saver, gamma=float(train_parameters[-1]), give_textfile_info=file_ext)
 
 end = time.perf_counter()
 

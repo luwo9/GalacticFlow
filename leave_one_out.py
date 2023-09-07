@@ -1,3 +1,8 @@
+#Outdated script, does not implement new data structure and needs updating
+#Recomended to use the API instead with train_GF
+#Will maybe be never updated, as the API is more flexible and easier to use
+raise RuntimeError("Outdated script, use API.train_GF instead.")
+
 #Made to train several flows, on the given galaxies, where different galaxies are left out each time
 #Follows the normal workflow, as in Workflow_cond.ipynb
 
@@ -23,7 +28,7 @@ retrain = False
 n_max_reload_on_crash = 2
 
 #Base filename for the models savefiles
-base_filename = "leavout_MttZ_all_CL2_24_10_512_8_lo"
+base_filename = "leavout_MttZ_all_CL2_14_10_128_4_lo"#"leavout_MttZ_all_CL2_24_10_512_8_lo"
 
 
 #Initiate a processor to handle data
@@ -37,7 +42,7 @@ Data_sub_v, N_stars_sub_v, M_stars_sub_v, M_dm_sub_v = mpc.choose_subset(Data_co
 
 
 #The GPUs to use will be proceseed to "cuda:GPU_nb"
-GPU_nbs = np.array([8,9])
+GPU_nbs = np.array([7,8])
 
 n_GPU_use = len(GPU_nbs)
 
@@ -60,7 +65,7 @@ class leavout_model:
 
         #device = f"cuda:{GPU_nb}"
 
-        model = flowcode.NSFlow(24, 10, 4, flowcode.NSF_CL2, K=10, B=3, network=flowcode.MLP, network_args=(512,8,0.2))
+        model = flowcode.NSFlow(14, 10, 4, flowcode.NSF_CL2, K=10, B=3, network=flowcode.MLP, network_args=(128,4,0.2))
         #model = model.to(device)
 
         if retrain:
@@ -74,7 +79,7 @@ class leavout_model:
             gamma = 0.998
             app = "re"
         else:
-            n_epochs = 18
+            n_epochs = 10
             init_lr = 0.00009
             gamma = 0.998
             app = ""
