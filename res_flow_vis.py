@@ -14,22 +14,56 @@ comp_names = "xyz"
 #Corner plot like in get_result_plots, but with a 2D histogram instead of scatter plot
 #Flow is then right top corner, data is left bottom corner. Otherwise the plot is the same
 #This is to be used as alternative inside get_result_plots as 4th plot
-x_and_v = list(itertools.chain(itertools.product(range(3), range(3)), itertools.product(range(3,6), range(3,6))))
-def cornerplot_hist(data_true, data_flow, names, color="individual", color_pass="local", grid_pass=False, perserve_aspect_grid=x_and_v):
+
+def _get_hist_bins(x, y, gridsize, perserve_aspect, standard_zoomout):
+    """Get right bins for 2D histogram in corner plot"""
+    if perserve_aspect:
+        min_x = min(x.min(), y.min())
+        max_x = max(x.max(), y.max())
+        min_y = min_x
+        max_y = max_x
+    else:
+        min_x = x.min()
+        max_x = x.max()
+        min_y = y.min()
+        max_y = y.max()
+
+    x_bins = np.linspace(min_x*standard_zoomout, max_x*standard_zoomout, gridsize)
+    y_bins = np.linspace(min_y*standard_zoomout, max_y*standard_zoomout, gridsize)
+    return x_bins, y_bins
+
+def _get_global_vmin_vmax(results):
+    """Get global vmin and vmax for a list of results in cornerplot_hist"""
+    vmin_data = -np.inf
+    vmax_data = np.inf
+    vmin_flow = -np.inf
+    vmax_flow = np.inf
+    
+    for (i, j), result in np.ndenumerate(results):
+        if j>i and result is not None:
+            vmin_data = np.minimum(vmin_data, np.min(result["data"][0]))
+            vmax_data = np.maximum(vmax_data, np.max(result["data"][0]))
+            vmin_flow = np.minimum(vmin_flow, np.min(result["flow"][0]))
+            vmax_flow = np.maximum(vmax_flow, np.max(result["flow"][0]))
+    return vmin_data, vmax_data, vmin_flow, vmax_flow
+
+
+x_and_v = list(itertools.chain(itertools.product(["x","y","z"],["x","y","z"]),itertools.product(["vx","vy","vz"],["vx","vy","vz"])))
+def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="individual", color_pass="local", grid_pass=False, perserve_aspect_grid=x_and_v):
     """
     Make a corner plot of the data and flow, with KDE plots on the diagonal and 2D histograms on the off-diagonal. One side of the diagonal is data, the other is flow.
 
     Parameters
     ----------
 
-    data_true : np.ndarray
-        The (true) galaxy data, shape (N, n)
+    data_true : pd.DataFrame
+        The (true) galaxy data to plot contains the labeled components.
 
-    data_flow : np.ndarray
-        The flow sample for the galaxy, shape (N, n)
-    
-    names : list of str
-        The names of the components of the data for the axis labels. Must be of length n.
+    data_flow : pd.DataFrame, optional, default: None
+        The flow sample for the galaxy, same format as data_true. If None, only the data is plotted.
+
+    names_to_print : list of str, optional, default: None
+        The names for the labels of the components. If None, the names are taken from the columns of data_true.
 
     color : {"individual", "global"}, optional, default: "individual"
         Whether the plots in one corner should be colored individually or with the same color scale.
@@ -40,9 +74,10 @@ def cornerplot_hist(data_true, data_flow, names, color="individual", color_pass=
     grid_pass : bool, optional, default: False
         Wheather to use the same grid used for the data for the flow as well, or recalculte the grid for the flow.
 
-    perserve_aspect_grid : list of tuples of ints, optional, default: x_and_v
-        The cornerplots for which an aspect ratio should be preserved. Each tuple is a pair of indices for the components of the respective plot. E.g. (0,1) is the plot for x and y.
+    perserve_aspect_grid : list of tuples of str, optional, default: x_and_v
+        The cornerplots for which an aspect ratio should be preserved. Each tuple is a pair of component names of the respective plot.
     """
+    colormap = "coolwarm"
     #Check all inputs
     if color not in ["individual", "global"]:
         raise ValueError("color must be 'individual' or 'global'")
@@ -55,51 +90,169 @@ def cornerplot_hist(data_true, data_flow, names, color="individual", color_pass=
     if grid_pass:
         print("Warning: grid_pass may not be a good choice for corner plots")
 
-    #Get the number of components
-    n = data_true.shape[1]
+    data_names = galaxy_true.columns.to_list()
+    galaxy_flow = galaxy_flow[data_names] if galaxy_flow is not None else None
 
-    #First calculate and store the results in a 2D list
-    #The first index is the row, the second the column
+    if names_to_print is None:
+        names_to_print = data_names
 
-    Results = [[None for _ in range(n)] for _ in range(n)]
-
-    #Loop over all components
+    #First compute all results
+    results = [[None for _ in data_names] for _ in data_names]
     sz = standard_zoomout
-    for row, col in itertools.product(range(n), range(n)):
-        data_y = data_true[:, row]
-        data_x = data_true[:, col]
-        flow_y = data_flow[:, row]
-        flow_x = data_flow[:, col]
+    for (ind_x, name_x), (ind_y, name_y) in itertools.product(enumerate(data_names), repeat=2):
 
-        #Decide what plot we are dealing with
-        if row == col:
-            #Diagonal -> KDE plot
-            #Calculate the KDE for the data and the flow
-            kde_data = scipy.stats.gaussian_kde(data_y)
-            kde_flow = scipy.stats.gaussian_kde(flow_y)
-            #(Note KDE will not share y axis, but that is not a problem)
-            #Calculate the x values for the plot
+        #Get the data
+        data_x = galaxy_true[name_x].values
+        data_y = galaxy_true[name_y].values
+        if galaxy_flow is not None:
+            flow_x = galaxy_flow[name_x].values
+            flow_y = galaxy_flow[name_y].values
+        
+        #Decide what case we have
+        if ind_x == ind_y:
             n_points_kde = 500
-            x_kde_data = np.linspace(np.min(data_y)*sz, np.max(data_y)*sz, n_points_kde)
-            x_kde_flow = np.linspace(np.min(flow_y)*sz, np.max(flow_y)*sz, n_points_kde)
+            #Diagonal case, use KDE
 
-            #Calculate the y values for the plot
-            y_kde_data = kde_data(x_kde_data)
-            y_kde_flow = kde_flow(x_kde_flow)
+            data_kde = scipy.stats.gaussian_kde(data_x)
+            x_coords_data = np.linspace(data_x.min()*sz, data_x.max()*sz, n_points_kde)
+            data_kde = data_kde(x_coords_data)
 
-            #Save the results
-            Results[row][col] = {"x_data": x_kde_data, "y_data": y_kde_data, "x_flow": x_kde_flow, "y_flow": y_kde_flow}
+            if galaxy_flow is not None:
+                flow_kde = scipy.stats.gaussian_kde(flow_x)
+                x_coords_flow = np.linspace(flow_x.min()*sz, flow_x.max()*sz, n_points_kde)
+                flow_kde = flow_kde(x_coords_flow)
+            
+            else :
+                flow_kde = None
+                x_coords_flow = None
 
-        elif row > col:
-            #Lower triangle -> 2D histogram of data
-            #But we might already calculate flow here (the row <-> col case) and use the dat results of e.g. the grid if desired
+            results[ind_x][ind_y] = {"data":(x_coords_data, data_kde), "flow":(x_coords_flow, flow_kde), "kind":"kde"}
 
-            #Start with the data
+        elif ind_y > ind_x:
+            #Off diagonal case, use 2D histogram
+            gridsize = 100
+            #Calculate data, and flow (ind_x>ind_y) at the same time, such that we do still have all parameters
 
-            #Calculate the grid
-            n_histo_bins = 100
+            perserve_aspect = (name_x, name_y) in perserve_aspect_grid or (name_y, name_x) in perserve_aspect_grid
 
-            max
+            #Data
+            x_bins, y_bins = _get_hist_bins(data_x, data_y, gridsize, perserve_aspect, sz)
+
+            data_hist = binned_statistic_2d(data_x, data_y, None, statistic="count", bins=(x_bins, y_bins))
+            data_hist = list(data_hist)
+
+            #Flow
+            if galaxy_flow is not None:
+                if grid_pass:
+                    x_bins_flow = x_bins
+                    y_bins_flow = y_bins
+                else:
+                    x_bins_flow, y_bins_flow = _get_hist_bins(flow_x, flow_y, gridsize, perserve_aspect, sz)
+
+                flow_hist = binned_statistic_2d(flow_x, flow_y, None, statistic="count", bins=(x_bins_flow, y_bins_flow))
+                flow_hist = list(flow_hist)
+            else:
+                flow_hist = None
+            
+            results[ind_x][ind_y] = {"data":(data_hist, x_bins, y_bins), "flow":(flow_hist, x_bins_flow, y_bins_flow), "kind":"hist"}
+
+        else:
+            pass
+
+
+    #Calculate a global color scale, if needed
+    if color_pass == "global":
+        global_vs = _get_global_vmin_vmax(results)
+    else:
+        global_vs = None
+
+    #Now plot all results
+    #Share y row-wise, but ignore the diagonal as it is a different plot
+    fig, axs = plt.subplots(len(data_names), len(data_names), figsize=(20,20), sharex="col", layout = "constrained")
+    for (ind_x, name_x), (ind_y, name_y) in itertools.product(enumerate(data_names), repeat=2):
+
+        ax_data = axs[ind_y][ind_x]
+        ax_flow = axs[ind_x][ind_y]
+
+        for ax in [ax_data, ax_flow]:
+                ax.set_box_aspect(1)
+
+        if ind_y == ind_x:
+            #KDE plot
+            data_kde = results[ind_x][ind_y]["data"]
+            flow_kde = results[ind_x][ind_y]["flow"]
+
+            ax_data.plot(data_kde[0], data_kde[1], label="Data", color="blue")
+            ax_data.fill_between(data_kde[0], data_kde[1], alpha=0.3, color="blue")
+            if galaxy_flow is not None:
+                ax_data.plot(flow_kde[0], flow_kde[1], label="Flow", color="orange")
+                ax_data.fill_between(flow_kde[0], flow_kde[1], alpha=0.3, color="orange")
+
+            if ind_x == 0:
+                ax_data.set_ylabel("Probability density")
+            elif ind_x == len(data_names)-1:
+                ax_data.set_xlabel(names_to_print[ind_x])
+
+        elif ind_y > ind_x:
+            if ind_x != 0:
+                ind_take = 0 if ind_y != 0 else 1
+                ax_data.sharey(axs[ind_y][ind_take])
+            if ind_y != 0:
+                ind_take = 0 if ind_x != 0 else 1
+                ax_flow.sharey(axs[ind_x][ind_y])
+
+            ax_data.set_facecolor(matplotlib.colormaps[colormap](0))
+            ax_flow.set_facecolor(matplotlib.colormaps[colormap](0))
+                
+            #2D histogram
+            data_hist, x_bins, y_bins = results[ind_x][ind_y]["data"]
+            flow_hist, y_bins_flow, x_bins_flow = results[ind_x][ind_y]["flow"]
+            #In case of flow x <-> y
+            if flow_hist is not None:
+                flow_hist[0] = flow_hist[0].T
+
+
+            #Get the right color scale
+            if global_vs is None:
+                v_min_data = data_hist[0].min()
+                v_max_data = data_hist[0].max()
+                if galaxy_flow is not None:
+                    v_min_flow = flow_hist[0].min()
+                    v_max_flow = flow_hist[0].max()
+            else:
+                v_min_data, v_max_data, v_min_flow, v_max_flow = global_vs
+
+            if color_pass == "first":
+                v_min_flow = v_min_data
+                v_max_flow = v_max_data
+            elif color_pass == "global":
+                vmin = np.minimum(v_min_data, v_min_flow)
+                vmax = np.maximum(v_max_data, v_max_flow)
+                v_min_data, v_max_data, v_min_flow, v_max_flow = vmin, vmax, vmin, vmax
+            
+            #Plot the data
+            im = ax_data.imshow(data_hist[0].T, origin="lower", extent=[x_bins[0], x_bins[-1], y_bins[0], y_bins[-1]], vmin=v_min_data, vmax=v_max_data, cmap=colormap, aspect="auto")
+            
+            #Plot the flow, if given
+            if galaxy_flow is not None:
+                im = ax_flow.imshow(flow_hist[0].T, origin="lower", extent=[x_bins_flow[0], x_bins_flow[-1], y_bins_flow[0], y_bins_flow[-1]], vmin=v_min_flow, vmax=v_max_flow, cmap="coolwarm", aspect="auto")
+
+            if ind_x == 0:
+                ax_data.set_ylabel(names_to_print[ind_y])
+            if ind_y == len(data_names)-1:
+                ax_data.set_xlabel(names_to_print[ind_x])
+        else:
+            if galaxy_flow is None:
+                fig.delaxes(ax_data)
+
+    
+    fig.suptitle("Corner plot of data and flow")
+    #fig.legend()
+    fig.show()
+
+        
+
+
 
 
 
