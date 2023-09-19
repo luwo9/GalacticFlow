@@ -754,7 +754,7 @@ class Processor_cond():
         start = time.perf_counter()
         if copy_data:
             Galaxies_stacked = Galaxies_stacked.copy()
-        print(f"Copy data: {time.perf_counter()-start:.2f}s")
+        #print(f"Copy data: {time.perf_counter()-start:.2f}s")
         #Learn components scaled with corresponding functions
         start = time.perf_counter()
         self.trf_fn_inv = inverse_transformations
@@ -764,21 +764,49 @@ class Processor_cond():
         for comp, fn in zip(self.trf_comp, self.trf_fn):
             Galaxies_stacked[comp] = fn(Galaxies_stacked[comp])
 
-        print(f"Transform data: {time.perf_counter()-start:.2f}s")
+        #print(f"Transform data: {time.perf_counter()-start:.2f}s")
         #Subtract mean from all values and divide by std to normalize data
         start = time.perf_counter()
         self.mu = Galaxies_stacked.mean(axis=0)
         self.std = Galaxies_stacked.std(axis=0)
-        print(f"Compute mean and std: {time.perf_counter()-start:.2f}s")
+        #print(f"Compute mean and std: {time.perf_counter()-start:.2f}s")
         start = time.perf_counter()
 
         Galaxies_stacked -= self.mu
         Galaxies_stacked /= self.std
-        print(f"Normalize data: {time.perf_counter()-start:.2f}s")
+        #print(f"Normalize data: {time.perf_counter()-start:.2f}s")
         #Assure the right order of components
         start = time.perf_counter()
         Galaxies_stacked = Galaxies_stacked[self.component_names["stars"]+self.cond_names["galaxy"]]
-        print(f"Reorder data: {time.perf_counter()-start:.2f}s")
+        #print(f"Reorder data: {time.perf_counter()-start:.2f}s")
+        return Galaxies_stacked
+    
+
+    def reproduce_normalization(self, Galaxies_stacked: pd.DataFrame, supress_warning=False) -> pd.DataFrame:
+        """
+        Reproduces the transformation described in Data_to_flow, using the stored functions, means and standard deviations.
+
+        This should not be used for normalization of training data, but is only meant to later reproduce the normalization that was done with Data_to_flow before training.
+        """
+        components_given = Galaxies_stacked.columns.tolist()
+
+        #Warn if components are given that were not normalized
+        if not supress_warning:
+            all_components = self.component_names["stars"]+self.cond_names["galaxy"]
+            if not set(components_given) <= set(all_components):
+                print(f"Warning there are components given that were never normalized. Ignoring them and normalizing the rest.")
+
+        Galaxies_stacked = Galaxies_stacked.copy()
+
+        for comp, fn in zip(self.trf_comp, self.trf_fn):
+            is_trf = list(set(components_given) & set(comp))
+            Galaxies_stacked[is_trf] = fn(Galaxies_stacked[is_trf])
+
+        mu_use = self.mu[components_given]
+        std_use = self.std[components_given]
+
+        Galaxies_stacked = (Galaxies_stacked-mu_use)/std_use
+
         return Galaxies_stacked
 
 
@@ -855,17 +883,8 @@ class Processor_cond():
         if not set(Condition.columns.tolist()) == set(cond_names_in_right_order):
             raise ValueError("Condition must contain all condition names and no additional ones.")
         
-
-        #Copy condition to not change original
-        Cond_flow = Condition.copy()
-        
-        #Transform condition if scaled
-        for comp, fn in zip(self.trf_comp, self.trf_fn):
-            is_trf = list(set(Cond_flow.columns.tolist()) & set(comp))
-            Cond_flow[is_trf] = fn(Cond_flow[is_trf])
-
-        #Scale condition as used for training
-        Cond_flow = (Cond_flow-(self.mu[cond_names_in_right_order]))/(self.std[cond_names_in_right_order])
+        #Scale as used for training
+        Cond_flow = self.reproduce_normalization(Condition)
 
         #Make sure the order is correct (=as trained) before converting to tensor
         Cond_flow = Cond_flow[cond_names_in_right_order]
