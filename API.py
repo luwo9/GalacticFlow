@@ -24,6 +24,7 @@ func_handle ={
     "MLP": flowcode.MLP,
     "np.log10": np.log10,
     "10**x": lambda x: 10**x,
+    "logdet_log10": ext.logdet_log10,
     "construct_MW_like_galaxy_leavout": ext.construct_MW_like_galaxy_leavout,
     "cond_M_stars_2age_avZ": ext.cond_M_stars_2age_avZ,
     "cond_M_stars": ext.cond_M_stars,
@@ -619,6 +620,7 @@ class GalacticFlow:
         parameters = pd.DataFrame(parameters, columns=columns)
 
         #Horizontally stack galaxy and parameters
+        galaxy = galaxy.reset_index(drop=True)
         X = pd.concat([galaxy, parameters], axis=1)
 
         pdf = self.general_pdf(X, split_size=split_size, GPUs=GPUs)
@@ -712,16 +714,16 @@ class GalacticFlow:
             return_dict = {"mu_vals": mu_vals, "std_vals": std_vals, "mu_names": mu_names, "std_names": std_names,
                            "component_names": self.processor.component_names, "cond_names": self.processor.cond_names}
         else:
-            return_dict = {"mu": None, "std": None,
+            return_dict = {"mu_vals": None, "std_vals": None, "mu_names": None, "std_names": None,
                            "component_names": self.processor.component_names, "cond_names": self.processor.cond_names}
             
         return return_dict
     
     def _processor_attrs_from_prepare_load(self, save_dict):
-        if save_dict["mu_vals"] is not None and save_dict["std_vals"] is not None:
-            save_dict["mu"] = pd.Series(save_dict["mu_vals"].numpy(), index=save_dict["mu_names"])
-            save_dict["std"] = pd.Series(save_dict["std_vals"].numpy(), index=save_dict["std_names"])
-            return_dict = {"mu": save_dict["mu"], "std": save_dict["std"],
+        if all([save_dict[key] is not None for key in ["mu_vals", "std_vals", "mu_names", "std_names"]]):
+            mu = pd.Series(save_dict["mu_vals"].numpy(), index=save_dict["mu_names"])
+            std = pd.Series(save_dict["std_vals"].numpy(), index=save_dict["std_names"])
+            return_dict = {"mu": mu, "std": std,
                            "component_names": save_dict["component_names"], "cond_names": save_dict["cond_names"]}
         else:
             return_dict = {"mu": None, "std": None,
@@ -772,6 +774,15 @@ Leaky ReLU slope: {flow_hypers["network_args"][2]}"""
 
 
         return printout_string
+
+    @property
+    def n_flow_params(self):
+        """
+        The number of parameters of the normalizing flow.
+        """
+        return np.sum([p.numel() for p in self.flow.parameters()])
+
+
 
 #Example for a definition dictionary
 #We recommend to use this as a template for your own models. Simply copy and paste and change the values accordingly.
@@ -884,9 +895,9 @@ def train_GF(models, GPUs, train_kwargs, filenames=None, max_restart = 2):
     >>> model1 = GalacticFlow({...})
     >>> models = [model1, model_def1, model_def2]
     >>> filenames = ["model1.pth", "model2.pth", "model3.pth"]
-    >>> train_kwargs = [{"epochs": 10, "batch_size": 1024, "init_lr": 0.00009, "gamma": 0.998, "update_textfile":f"model{i}.txt"} for i in range(3)]
+    >>> train_kwargs = [{"epochs": 10, "batch_size": 1024, "init_lr": 0.00009, "gamma": 0.998, "update_textfile":f"model{i}"} for i in range(3)]
     >>> train_GF(models, use_gpus, train_kwargs, filenames)
-    >>> #Now model1, model2 and model3 are trained on GPUs 0,1,2,3 respectively and saved to model1.pth, model2.pth and model3.pth
+    >>> #Now model1, model2 and model3 are trained on GPUs 0,1,2 respectively and saved to model1.pth, model2.pth and model3.pth
     """
 
     #Check the models input
