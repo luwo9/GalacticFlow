@@ -45,53 +45,6 @@ def rotate_galaxy_xy(galaxy, resolution=100, quant=0.75):
     return galaxy_rot
 
 
-#Function to operate ext_sample.py by calling multiple versions of it with subprocess.Popen, allowing for parallel sampling
-#Deprecated
-def parallel_sample(model, condition_or_n, GPU_nbs, split_size=300000):
-    print("WARNING: This is a deprecated function. Use mp_evaluate instead.")
-    n_GPUs = len(GPU_nbs)
-    if isinstance(condition_or_n, int):
-        condition_or_n_iter = [condition_or_n//n_GPUs]*n_GPUs
-        condition_or_n_iter[-1] += condition_or_n%n_GPUs
-    else:
-        condition_or_n_iter = torch.split(condition_or_n, -(condition_or_n.shape[0]//-n_GPUs))
-    
-    #Save model and data to be used by the subprocesses
-    torch.save(model, "ext_sampler/model_ext_sampler.pth")
-    for i, condition_or_n in enumerate(condition_or_n_iter):
-        torch.save(condition_or_n, f"ext_sampler/data_{i}.pth")
-
-    np.save("ext_sampler/split_size_ext_sampler.npy", split_size)
-
-
-    processes = []
-
-    for i, (GPU, condition_or_n) in enumerate(zip(GPU_nbs, condition_or_n_iter)):
-        process = subprocess.Popen(["python3", "ext_sample.py", f"{i}", f"{GPU}"])
-        processes.append(process)
-
-    for process in processes:
-        process.wait()
-    
-    for process in processes:
-        #If one process had an error, throw an error
-        if process.poll() != 0:
-            raise RuntimeError("One of the processes had an error")
-    
-    sample = []
-    for i in range(n_GPUs):
-        sample.append(torch.load(f"ext_sampler/data_{i}.pth"))
-        subprocess.Popen(["rm", f"ext_sampler/data_{i}.pth"]).wait()
-
-    sample = torch.vstack(sample)
-
-    #Delete the model and the split_size file
-    subprocess.Popen(["rm", "ext_sampler/model_ext_sampler.pth"]).wait()
-    subprocess.Popen(["rm", "ext_sampler/split_size_ext_sampler.npy"]).wait()
-
-    return sample
-
-
 #For multi-gpu evaluation of the model
 def _splitN(N_tot, N_per_batch):
     N_batches = N_tot//N_per_batch
