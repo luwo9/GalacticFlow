@@ -1,9 +1,17 @@
+"""
+This module makes the normalizing flow usable with data.
+Mainly it provides Processor_cond, instances of which provide all methods needed in a typical workflow.
+It establishes an own data structure and provides methods for train/test splitting and condition choosing as well as normalization and
+sampling methods that respect this normalization.
+
+See Base_Processor_Workflow.ipynb for more information on how to use this module.
+"""
+
 import numpy as np
 import torch
 import glob
 from sklearn.decomposition import PCA
 import externalize as ext
-import subprocess
 import flowcode
 import torch.multiprocessing as mp
 import copy
@@ -278,45 +286,7 @@ class Processor():
         Data = raw*self.std+self.mu
         return Data.numpy()
 
-#Ignore this:
-# New Data format should be implemented: Passed around is only 1 variable: List of dicts, 1 for each galaxy.
-# The dict is of the form {**star_properties, "galaxy":galaxy_properties}, where
-# star_properties is e.g. {"x": shape (N,), "vx":shape (N,),..., "Z": shape (N,), "feh": shape (N,), "ofe": shape (N,), "mass": shape (N,), "age": shape (N,)}
-# galaxy_properties is e.g. {"N_stars": int, "M_stars": float, "M_dm": float, "id": int, ...}
-# Thr comeonent names are saved in a (self.)list of strings, e.g. ["x", "vx", ..., "Z", "feh", "mass", "age"]
-# choose_subset then adds the condition keys to the star_properties dict e.g. M_star shape (N,), and the component names to the list of component names, e.g. "M_star"
-# Any cond_fn then returns a dict e.g. {"M_star":float, "avZ":float,...} Of course use_fn and use_fn have to be adapted to this new format. No longer need dm identification (but can)
-# New fn for collapsing the star_properties dict to a single array of shape (N, 10+), where 10 is the number of components. Then fn that stacks this.
-# For the sampled results, use galaxysplit, N_simply hast to be known by the sampler. Then it can be expanded into a star_properties dict again.
-# the galaxy_properties dict makes no sense for the sampled results, so it is not used there. (But could manually add back e.g. sim ids if comapring to data)
-# Maybe also return a big star_properties dict such that the components are named, but how do get in right smaller dicts? Would need a seperate fn for that.
-#Maybe just offer to return the (self.)list of component names?
-#Also think about API behaviour what should be dne automatically and what not. Good idea: Give sample_galaxy an option to return rawarray or named dict. Then can do both.
-#Raw array than would maybe also return (self.)list of component names this would be the best option for general_sample either (i assume)
-#End of ignore this
 
-#Data structure:
-#Galaxy is a dict of the form {"stars": df_stars, "gas": df_gas, ..., "galaxy": galaxy_dict}
-#Where df_... is a pandas dataframe with colums like "x", "vx", ..., "Z", "feh", "mass", "age"; galaxy_dict is a dict with keys like "M_stars", "M_dm", "id", ...
-#Carried arround is a list of such dicts, one for each galaxy. (One could later implement as a class usig shared memory, but for now this is fine)
-#Processer stores a list of component names, e.g. ["x", "vx", ..., "Z", "feh", "mass", "age"], How is gas ... handled? Do later with possible api changes?
-#    so cannon way like dict could be better that can be saved at once.  ALL COMPS EVEN IF ALSO CONDITION!!
-#Also store a list of condition names, e.g. ["M_stars", "avZ", ...] as condnames["galaxy"] with maybe also condnames["stars"] for e.g. x as condition.
-#Then whenever data is passed to flow names are given (all index accesed is deprecated) and the order is checked.
-#choose_subset should add a new dict (better df?) to the galaxy "parameters"/"conditions" with cond names and values, e.g. {"M_stars":float, "avZ":float,...}, diststack than handels this.
-#For inference:
-#Cond_sample also uses cond names and a named input, not cond_inds. Allows for option to insert or not insert cond values.
-#As any inds are somewhat deprecated it should return a df for sure.
-#Luckily np.split can handle the df.
-#For sample_galaxy: another option if return df or galaxy (dict) with df as stars key. Conditions/Parameters could then be added if not inserted (maybe an option for that).
-#    Conition is input as dict or df and then again checked for names and order (sample_conditional should probably do that)
-#train_flow should also no longer take cond_inds but cond_names and then interface with data like a dataframe. (But then data_to_flow reutrns a df)
-#We consider inserting conditions in get_data as bad practice, this is part of the choose_subset step, but if done:
-#Add the condition names (only) to the condition names list
-#No: we do it this way:
-# cond_names is a dict. That has a list of names for keys "galaxy", "stars", "gas". This allows to use e.g. "x" as a star condition when learning p(v|x) for stars and p(v|z) for gas.
-#In case of multiple astro objects add them acordingly in get_data and choose_subset. Choose subset must be called with the same cond fn (galaxy conds) for all astro objects.
-#In future make maybe cond selection own method to avoid this special treatment.
 class Processor_cond():
     """
     Processor for conditional model. Made to complete several tidious tasks along the workflow of training and evaluating a conditional normalizing flow.
@@ -405,7 +375,7 @@ class Processor_cond():
         Galaxies = []
 
         component_names = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "mass", "age"]
-        self.component_names["stars"] = component_names#update after use_fn
+        self.component_names["stars"] = component_names
 
         for i, file in enumerate(files):
             star_data = np.load(file).T
@@ -537,38 +507,21 @@ class Processor_cond():
             #Ignore last 10 values of metallicity
             last_10 = np.argsort(galaxy["stars"]["Z"])[-10:]
             is_valid = is_valid & (np.isin(np.arange(galaxy["stars"].shape[0]), last_10, invert=True))
-            #is_valid = is_valid & (galaxy[:,6]>=np.quantile(galaxy[is_valid,6], 10e-4))&(galaxy[:,6]<=np.quantile(galaxy[is_valid,6], 0.9999))
 
             #Fe/H
             is_valid = is_valid & (galaxy["stars"]["feh"]>=feh_min)
-            #is_valid = is_valid & (galaxy[:,7]>=-5)&(galaxy[:,7]<=np.quantile(galaxy[is_valid,7], 0.9999))
 
             #O/Fe
             is_valid = is_valid & (galaxy["stars"]["ofe"]>=ofe_min)
-            #is_valid = is_valid & (galaxy[:,8]>=np.quantile(galaxy[is_valid,8], 10e-3))&(galaxy[:,8]<=np.quantile(galaxy[is_valid,8], 1-10e-3))
-
-
-            #Metallicity
-            #Wrong indices! ofe and feh are switched
-            #No metallicity extreme stars
-            #is_valid = (galaxy[:,7] >=self.ofe_min)&(galaxy[:,8]>=self.feh_min)
-            #TEST:
-            #7: -5 and 0.9999 quantile
-            #8: 10e-4 quantile  and 1-10e-4 quantile
-            #6: 10e-3 quantile and 0.99935 quantile
-            #new:
-            #
 
 
             #Apply constrains now
             galaxy = _custom_copy(galaxy, copy_data=copy_data)
-
             galaxy["stars"] = galaxy["stars"][is_valid]
             
-            
-
             #Calculate new number of stars
             N_star = galaxy["stars"].shape[0]
+
 
             #Constrain on galaxies (new number of stars)
             if N_star>=N_min:
@@ -590,12 +543,6 @@ class Processor_cond():
         return Galaxies_out
     
 
-    #This function can be rewritten:
-    #Components can be chosen in the data cleaning->Not so nice rather completley outsource in supplied functions, to let processing.py be static.
-    #The subset can be chosen in the data cleaning-->^
-    #The conditions can be moved to diststack where then also hstack is done, additional input is N_stars, M_stars, M_dm
-    #In general the condition finding will also vary so it can be outsourced to a function using (galaxy, M_star, M_dm_g) and returning the Condition array as below
-    #Or inputting (Data, N_stars, M_stars, M_dm) and returning the condition array, then diststack only takes additonal input.
     def choose_subset(self, Galaxies, comp_use = ["x", "y", "z", "vx", "vy", "vz", "Z", "feh", "ofe", "age"], cond_fn = ext.cond_M_stars, use_fn = ext.construct_MW_like_galaxy_leavout("id",[]), pre_defined_cond=None, copy_data=True, info=True):
         """
         Choose a subset of the data. Chosen are components, condition and galaxies.
@@ -633,10 +580,12 @@ class Processor_cond():
         Galaxies_out = []
 
         for galaxy in Galaxies:
-            #Ccheck if galaxy should be used
+
+            #Check if galaxy should be used
             if use_fn(galaxy):
                 #Copy galaxy as desired
                 galaxy = _custom_copy(galaxy, copy_data=copy_data)
+
 
                 #Compute galaxy conditions
                 Condition = cond_fn(galaxy)
@@ -645,16 +594,11 @@ class Processor_cond():
                 elif type(Condition)!=pd.DataFrame:
                     raise TypeError("cond_fn must return dict or pd.DataFrame")
                 
-                #For now, warn if parameters are set differently, no dont, in case it is changed maybe
-
                 #Add conditions to galaxy, only as dict keys, diststack will add them to the data
                 galaxy["parameters"] = Condition
                 #Save condition names (important for e.g. ordering of components before transforming to torch tensors)
                 self.cond_names["galaxy"] = Condition.columns.to_list()
 
-                #Old:
-                #Condition = np.array([*cond_fn(galaxy, N_star, M_star, M_dm_g)])
-                #galaxy = np.hstack((galaxy, Condition.reshape(-1,Condition.shape[0]).repeat(galaxy.shape[0], axis=0)))
 
                 #Choose components
                 galaxy["stars"] = galaxy["stars"][comp_use]
@@ -704,12 +648,10 @@ class Processor_cond():
         """
         
         #This is independently implemented from _custom_copy, as this is intended for galaxy type data not stacked data and may be changed
-        start = time.perf_counter()
         if copy_data:
             Galaxies_stacked = Galaxies_stacked.copy()
-        #print(f"Copy data: {time.perf_counter()-start:.2f}s")
+        
         #Learn components scaled with corresponding functions
-        start = time.perf_counter()
         self.trf_fn_inv = inverse_transformations
         self.trf_comp = transformation_components
         self.trf_fn = transformation_functions
@@ -717,21 +659,17 @@ class Processor_cond():
         for comp, fn in zip(self.trf_comp, self.trf_fn):
             Galaxies_stacked[comp] = fn(Galaxies_stacked[comp])
 
-        #print(f"Transform data: {time.perf_counter()-start:.2f}s")
+
         #Subtract mean from all values and divide by std to normalize data
-        start = time.perf_counter()
         self.mu = Galaxies_stacked.mean(axis=0)
         self.std = Galaxies_stacked.std(axis=0)
-        #print(f"Compute mean and std: {time.perf_counter()-start:.2f}s")
-        start = time.perf_counter()
 
         Galaxies_stacked -= self.mu
         Galaxies_stacked /= self.std
-        #print(f"Normalize data: {time.perf_counter()-start:.2f}s")
+
         #Assure the right order of components
-        start = time.perf_counter()
         Galaxies_stacked = Galaxies_stacked[self.component_names["stars"]+self.cond_names["galaxy"]]
-        #print(f"Reorder data: {time.perf_counter()-start:.2f}s")
+
         return Galaxies_stacked
     
 
@@ -963,6 +901,30 @@ class Processor_cond():
 
     @staticmethod
     def get_array(Galaxies: "list[dict]", *keys:str):
+        """
+        Get an array of values from the galaxy data.
+        I.e. Array of galaxy[key1][key2][...] for each galaxy in Galaxies.
+
+        Parameters
+        ----------
+
+        Galaxies : list of dicts
+            List of dicts, each containing the data of one galaxy.
+        keys : str
+            Sequence of keys to be used to get the values from the galaxy data.
+
+        Returns
+        -------
+
+        result : np.array
+            Array of values from the galaxy data. Has shape (len(Galaxies),).
+
+        Examples
+        --------
+
+        >>> processor.get_array(Galaxies, "galaxy", "M_stars")#Will access galaxy["galaxy"]["M_stars"] for each galaxy in Galaxies
+        np.array([1e10, 1e11, 1e12, ...])
+        """
         #We want [galaxy[key1][key2][...] for galaxy in Galaxies]
         if len(keys) == 0:
             raise ValueError("Must specify at least one key")

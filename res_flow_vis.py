@@ -1,3 +1,9 @@
+"""
+Implements functions to visualize the results of the flow.
+Mainly:
+- Comparing two galaxies with cornerplot_hist or get_result_plots
+- Plotting all galaxies with plot_conditional_2 and plot_conditional_histograms
+"""
 import seaborn as sns
 import pandas as pd
 import numpy as np
@@ -5,15 +11,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 from scipy.stats import binned_statistic_2d
 import itertools
-
 import scipy.stats
+from scipy.interpolate import interp1d
 
 standard_zoomout = 1.2
 comp_names = "xyz"
-
-#Corner plot like in get_result_plots, but with a 2D histogram instead of scatter plot
-#Flow is then right top corner, data is left bottom corner. Otherwise the plot is the same
-#This is to be used as alternative inside get_result_plots as 4th plot
 
 def _get_hist_bins(x, y, gridsize, perserve_aspect, standard_zoomout):
     """Get right bins for 2D histogram in corner plot"""
@@ -48,8 +50,44 @@ def _get_global_vmin_vmax(results):
     return vmin_data, vmax_data, vmin_flow, vmax_flow
 
 
+def _share_cp_axis(ax_data, ax_flow, ind_x, ind_y, axs, flip_flow):
+    if flip_flow:
+        #Now the flow is in the same direction as the data so we can share axes
+        if ind_x != 0:
+            ind_take = 0 if ind_y != 0 else 1
+            ax_data.sharey(axs[ind_y][ind_take])
+        #Same for x axis of data
+        max_ind = len(axs)-1
+        if ind_y != max_ind:
+            ind_take = max_ind #also share with the diagonal
+            ax_data.sharex(axs[ind_take][ind_x])
+        #Same for y axis of flow
+        ax_flow.sharey(ax_data)
+        ax_flow.sharex(ax_data)
+        
+    else:
+        if ind_x != 0:
+            ind_take = 0 if ind_y != 0 else 1
+            ax_data.sharey(axs[ind_y][ind_take])
+        if ind_y != 0:
+            ind_take = 0 if ind_x != 0 else 1
+            ax_flow.sharey(axs[ind_x][ind_y])
+
+def _apply_manual_cuts(manual_cut_dict, name_x, data_x, name_y, data_y):
+    #Args is name, value, name, value, ...
+    lower_x, upper_x = manual_cut_dict.get(name_x, (-np.inf, np.inf))
+    lower_y, upper_y = manual_cut_dict.get(name_y, (-np.inf, np.inf))
+    is_in_x = (data_x >= lower_x) & (data_x <= upper_x)
+    is_in_y = (data_y >= lower_y) & (data_y <= upper_y)
+    is_in = is_in_x & is_in_y
+    data_x = data_x[is_in]
+    data_y = data_y[is_in]
+    return data_x, data_y
+
+    
+
 x_and_v = list(itertools.chain(itertools.product(["x","y","z"],["x","y","z"]),itertools.product(["vx","vy","vz"],["vx","vy","vz"])))
-def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="individual", color_pass="local", grid_pass=False, perserve_aspect_grid=x_and_v):
+def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="individual", color_pass="local", grid_pass=False, perserve_aspect_grid=x_and_v, flip_flow=True, save_fig=False, manual_cut_dict=None):
     """
     Make a corner plot of the data and flow, with KDE plots on the diagonal and 2D histograms on the off-diagonal. One side of the diagonal is data, the other is flow.
 
@@ -76,7 +114,19 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
 
     perserve_aspect_grid : list of tuples of str, optional, default: x_and_v
         The cornerplots for which an aspect ratio should be preserved. Each tuple is a pair of component names of the respective plot.
+
+    flip_flow : bool, optional, default: True
+        Whether to flip the flow plots in the off-diagonal, such that the flow is plotted in the same direction as the data.
+        This will also share all axes between the data and flow plots and include new labels for the flow plots.
+
+    save_fig : bool or str, optional, default: False
+        Path to save the figure to. If False, the figure is not saved.
+
+    manual_cut_dict : dict, optional, default: None
+        Dictionary containing the manual cuts for the data. The keys are the names of the components, the values are tuples of the form (min, max).
+        E.g. {"[Fe/H]":(-1,1)} will cut the data in the [Fe/H] component at -1 and 1.
     """
+    label_kwargs = {"fontsize":22}
     colormap = "coolwarm"
     #Check all inputs
     if color not in ["individual", "global"]:
@@ -87,8 +137,11 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
     #Highlight possibly bad choices
     if color == "global":
         print("Warning: global color scale may not be a good choice for corner plots")
-    if grid_pass:
-        print("Warning: grid_pass may not be a good choice for corner plots")
+    # if grid_pass:
+    #     print("Warning: grid_pass may not be a good choice for corner plots")
+
+    if manual_cut_dict is None:
+        manual_cut_dict = {}
 
     data_names = galaxy_true.columns.to_list()
     galaxy_flow = galaxy_flow[data_names] if galaxy_flow is not None else None
@@ -104,9 +157,11 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
         #Get the data
         data_x = galaxy_true[name_x].values
         data_y = galaxy_true[name_y].values
+        data_x, data_y = _apply_manual_cuts(manual_cut_dict, name_x, data_x, name_y, data_y)
         if galaxy_flow is not None:
             flow_x = galaxy_flow[name_x].values
             flow_y = galaxy_flow[name_y].values
+            flow_x, flow_y = _apply_manual_cuts(manual_cut_dict, name_x, flow_x, name_y, flow_y)
         
         #Decide what case we have
         if ind_x == ind_y:
@@ -122,7 +177,7 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
                 x_coords_flow = np.linspace(flow_x.min()*sz, flow_x.max()*sz, n_points_kde)
                 flow_kde = flow_kde(x_coords_flow)
             
-            else :
+            else:
                 flow_kde = None
                 x_coords_flow = None
 
@@ -168,7 +223,8 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
 
     #Now plot all results
     #Share y row-wise, but ignore the diagonal as it is a different plot
-    fig, axs = plt.subplots(len(data_names), len(data_names), figsize=(20,20), sharex="col", layout = "constrained")
+    sharex = "none" if flip_flow else "col"
+    fig, axs = plt.subplots(len(data_names), len(data_names), figsize=(20,20), sharex=sharex, layout = "constrained")
     for (ind_x, name_x), (ind_y, name_y) in itertools.product(enumerate(data_names), repeat=2):
 
         ax_data = axs[ind_y][ind_x]
@@ -178,6 +234,8 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
                 ax.set_box_aspect(1)
 
         if ind_y == ind_x:
+            #Share x axis
+            ax_data.sharex(axs[ind_x][len(data_names)-1])
             #KDE plot
             data_kde = results[ind_x][ind_y]["data"]
             flow_kde = results[ind_x][ind_y]["flow"]
@@ -189,17 +247,18 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
                 ax_data.fill_between(flow_kde[0], flow_kde[1], alpha=0.3, color="orange")
 
             if ind_x == 0:
-                ax_data.set_ylabel("Probability density")
+                ax_data.set_ylabel("Probability\n density", **label_kwargs)
             elif ind_x == len(data_names)-1:
-                ax_data.set_xlabel(names_to_print[ind_x])
+                ax_data.set_xlabel(names_to_print[ind_x], **label_kwargs)
+
+            #Hide y axis labels
+            plt.setp(ax_data.get_yticklabels(), visible=False)
+            if ind_y != len(data_names)-1:
+                plt.setp(ax_data.get_xticklabels(), visible=False)
 
         elif ind_y > ind_x:
-            if ind_x != 0:
-                ind_take = 0 if ind_y != 0 else 1
-                ax_data.sharey(axs[ind_y][ind_take])
-            if ind_y != 0:
-                ind_take = 0 if ind_x != 0 else 1
-                ax_flow.sharey(axs[ind_x][ind_y])
+            #This function will handle sharing the right axes
+            _share_cp_axis(ax_data, ax_flow, ind_x, ind_y, axs, flip_flow)
 
             ax_data.set_facecolor(matplotlib.colormaps[colormap](0))
             ax_flow.set_facecolor(matplotlib.colormaps[colormap](0))
@@ -208,8 +267,15 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
             data_hist, x_bins, y_bins = results[ind_x][ind_y]["data"]
             flow_hist, y_bins_flow, x_bins_flow = results[ind_x][ind_y]["flow"]
             #In case of flow x <-> y
+            #The other indices in flow_hist are never swaped!
             if flow_hist is not None:
-                flow_hist[0] = flow_hist[0].T
+                if flip_flow:
+                    #Again x <-> y
+                    flow_hist[0] = flow_hist[0]
+                    #Also x_bins and y_bins
+                    x_bins_flow, y_bins_flow = y_bins_flow, x_bins_flow
+                else:
+                    flow_hist[0] = flow_hist[0].T
 
 
             #Get the right color scale
@@ -235,20 +301,33 @@ def cornerplot_hist(galaxy_true, galaxy_flow=None, names_to_print=None, color="i
             
             #Plot the flow, if given
             if galaxy_flow is not None:
-                im = ax_flow.imshow(flow_hist[0].T, origin="lower", extent=[x_bins_flow[0], x_bins_flow[-1], y_bins_flow[0], y_bins_flow[-1]], vmin=v_min_flow, vmax=v_max_flow, cmap="coolwarm", aspect="auto")
+                im = ax_flow.imshow(flow_hist[0].T, origin="lower", extent=[x_bins_flow[0], x_bins_flow[-1], y_bins_flow[0], y_bins_flow[-1]], vmin=v_min_flow, vmax=v_max_flow, cmap=colormap, aspect="auto")
 
             if ind_x == 0:
-                ax_data.set_ylabel(names_to_print[ind_y])
+                ax_data.set_ylabel(names_to_print[ind_y], **label_kwargs)
             if ind_y == len(data_names)-1:
-                ax_data.set_xlabel(names_to_print[ind_x])
+                ax_data.set_xlabel(names_to_print[ind_x], **label_kwargs)
+
+            #Hide ticklabels except from first and last column/row
+            if ind_x != 0:
+                plt.setp(ax_data.get_yticklabels(), visible=False)
+            if ind_y != len(data_names)-1:
+                plt.setp(ax_data.get_xticklabels(), visible=False)
+            
+            plt.setp(ax_flow.get_yticklabels(), visible=False)
+            plt.setp(ax_flow.get_xticklabels(), visible=False)
         else:
             if galaxy_flow is None:
                 fig.delaxes(ax_data)
 
     
-    fig.suptitle("Corner plot of data and flow")
-    #fig.legend()
-    fig.show()
+    #fig.suptitle("Corner plot of data and flow")
+    if save_fig:
+        fig.savefig(save_fig)
+        #Close the figure to save memory
+        plt.close(fig)
+    else:
+        fig.show()
 
         
 
@@ -1083,8 +1162,83 @@ def plot_conditional_2(*Data_colection ,type="N", label="", show="page", scale=N
         fig.savefig(f"plots/Plot_conditional_{label}_{i}.{format}", dpi=300, format=format)
         fig.show()
 
-            
-            
+
+def make_contours(x, y, cumulative_levels, **contour_kwargs):
+    """
+    Plot contours of the 2D distribution of x and y.
+    The contours are chosen such that the cumulative probability of the 2D distribution is equal to the values in cumulative_levels.
+
+    Parameters
+    ----------
+
+    x : np.ndarray
+        x values of the 2D distribution.
+    y : np.ndarray
+        y values of the 2D distribution.
+    cumulative_levels : list of float
+        List of cumulative probabilities of the 2D distribution, for which contours are to be plotted.
+    **contour_kwargs
+        Keyword arguments to be passed to matplotlib.pyplot.contour.
+
+    Returns
+    -------
+
+    contours : matplotlib.contour.QuadContourSet
+        Contour plot.
+    fmt : function
+        Function to format the labels of the contours, such that they show the cumulative probability of the contour.
+
+    Examples
+    --------
+    >>> x = np.random.normal(size=1000)
+    >>> y = np.random.normal(size=1000)
+    >>> cumulative_levels = [0.1, 0.5, 0.9]
+    >>> contours, fmt = make_contours(x, y, cumulative_levels)
+    >>> plt.clabel(contours, fmt=fmt)
+    >>> plt.show()
+    """
+    #Sort cumulative levels
+    c_levels = np.array(cumulative_levels)
+    c_levels = np.sort(c_levels)
+
+    #Make a kde of the 2D distribution
+    kde = scipy.stats.gaussian_kde(np.vstack([x, y]), bw_method=0.15)
+
+    #Get the grid to evaluate the kde on
+    x_coords = np.linspace(x.min(), x.max(), 100)
+    y_coords = np.linspace(y.min(), y.max(), 100)
+    x_grid, y_grid = np.meshgrid(x_coords, y_coords)
+    grid_coords = np.vstack([x_grid.ravel(), y_grid.ravel()])
+
+    #Evaluate the kde on the grid
+    z = kde(grid_coords)
+    z_grid = z.reshape(x_grid.shape)
+
+    #Now we want to determine the cumulative probability of the 2D distribution at each point on the grid
+    #We now interpret the pdf values at the grid points as discrete probabilities, and normalize their to sum to 1
+    z_grid /= z_grid.sum()
+
+    #Now for a range of values of probability/z values we want to obtain the cummulative distribution of being points with a lower probability/z value
+    #I.e. being inside the contour of the respective probability/z value
+    contours_at = np.linspace(0, z.max(), 1000)
+    cum_prob_in_contours = ((z_grid <= contours_at[:, None, None])*z_grid).sum(axis=(1, 2))
+
+    #Now interpolate as a function of the cumulative probability, that gives the right z value for a contour
+    cdf_to_z_contour = interp1d(cum_prob_in_contours, contours_at)
+    #Get the the contour z values for the cumulative probability values desired
+    z_contours_from_cdf = cdf_to_z_contour(c_levels)
+    #Make the contours at those z values
+    contour_kwargs["levels"] = z_contours_from_cdf
+    contours = plt.contour(x_grid, y_grid, z_grid, **contour_kwargs)
+
+    #Provide a format function that takes exactly the used contour z values
+    #and returns the cumulative probability of the contour requested originally
+    #For usage in plt.clabel, it will label the contours like the cumulative probability, not the z value
+    cont_label_dict = {k:v for v, k in zip(c_levels, z_contours_from_cdf)}
+    def fmt(x):
+        fmt_str_percet = f"{cont_label_dict[x]:.0%}"#This will not display 0.1% as 0.1%, but as 0% could be improved
+        return fmt_str_percet
+    return contours, fmt
 
     
 

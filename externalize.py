@@ -1,3 +1,7 @@
+"""
+Definition of several functions that are used as user input to other functions.
+Mainly functions for processing.Processor_Cond().choose_subset and processing.Processor_Cond().Data_to_flow.
+"""
 import numpy as np
 import pandas as pd
 #Externalized functions for condition selection and galaxy selection here to make the mai file, where this is normally expected to be, more readable.
@@ -46,7 +50,7 @@ def construct_MW_like_galaxy_leavout(key, forbidden_values):
     function
         Function that selects galaxies that are Milky Way like, but forbids galaxies with certain values of a certain key in the galaxy["galaxy"] dict.
     """
-    #print("Remember it's best to once choose a subset to view, use those DM masses and choose a 2nd subset for training. SORT Mdm before choosing indices")
+
     def MW_like_galaxy_leavout(galaxy):
         """
         Selects galaxies that are Milky Way like, but forbids galaxies with certain values of a certain key in the galaxy["galaxy"] dict.
@@ -155,7 +159,7 @@ def logdet_log10(x:pd.DataFrame, _):
     return log_det_jacobian
 
 
-#Old
+#Old unsused functions
 def tanh_smoothing(x):
     """
     Applies a tanh smoothing to the data, following https://arxiv.org/pdf/2205.01129.pdf. This avoids the flow to be trained on sharp edges.

@@ -1,10 +1,14 @@
-#The purpose of this is to allow a way of working with the model, that is not as flexible as maybe the usual workflow, but is more user friendly and easier to use.
-#Therfore an abstarct model class is defined that combines the pytorch model with all the processing steps that are needed to get the model to work.
-#In principle it can be adjusted as desired, if things in the workflow change, recovering full flexibility.
+"""
+Provides the API for easy use of the model.
+Defines the GalacticFlow class, that allows easy working with the model, by providing a simple and clear interface,
+while only sacrificing very little flexibility compared to the base workflow.
+In principle it can be adjusted as desired, if things in the workflow change, recovering full flexibility.
 
-#This class is the main class that is used to work with the model.
-#It is meant to be set with all characteristics that are specific to this model (e.g. What data it uses, what the pytorch model architecture is etc.) right from the start.
-#Methods are then used for saving the whole class/state, loading it, training, sampling pdf evaluation etc.
+It is meant to be set with all characteristics that are specific to this model (e.g. What data it uses, what the pytorch model architecture is etc.) right from the start.
+Methods are then used for saving the whole class/state, loading it, training, sampling pdf evaluation etc.
+
+Also train_GF allows to queue multiple models on multiple GPUs for training in parallel. It automatically restarts training in case of a crash.
+"""
 import torch
 import numpy as np
 import flowcode
@@ -15,6 +19,7 @@ import os
 import pandas as pd
 import torch.multiprocessing as mp
 
+#Register functions with a string name, so they can be saved and loaded with safe_mode=True (without pickle)
 func_handle ={
     "Processor_cond": processing.Processor_cond,
     "Processor": processing.Processor,
@@ -83,7 +88,7 @@ class GalacticFlow:
         Get the parameters the model is conditional on.
     get_components(self, type_of_object):
         Get the components of the data.
-    
+
     Attributes
     ----------
     Galaxies : list of dicts
@@ -94,6 +99,8 @@ class GalacticFlow:
         The time it took to train the model.
     flow_architecture : str
         The architecture of the flow.
+    n_flow_params : int
+        The number of parameters of the flow.
     
 
     Definition of a model
@@ -120,7 +127,7 @@ class GalacticFlow:
         definition: dict or str
             The definition of the model, containing all information, either as a dict or a file path to a saved existing model. See below for details.
         safe_mode: bool, (optional), default: True
-            If True, the model is loaded without the use of pickle (=load with torch.load and weights_only=True).
+            If True, the model is loaded without the use of pickle (=load with torch.load and weights_only=True). See below for important details.
             If False, arbitrary functions may be saved and loaded, but it comes with the usual risks of using pickle (arbitrary code execution).
         
         Definition of a model
@@ -150,30 +157,14 @@ class GalacticFlow:
         "loss_history": A list of the loss history during training.
 
         See the template definition for details and more up to date parameters.
+
+        Notes
+        -----
+
+        To load a function with safe_mode=True, it must be registered in func_handle accordingly.
         """
-        #Definition is a dict of dicts that contains all the information needed to define the model or a file path to a saved (abstract) model
-        #safe_mode = true means in case of a file path that it is loaded without the use of pickle (load with weights_only=True).
-        #If it is intended to be loaded with safe_mode, the functions and classes must be given by a string and the corresponding function/class is used from the func_handle dict.
-        #Without safe_mode arbitrary functions may be saved and loaded, but it is not safe, as it uses pickle.
-        #Similarly, in case of safe_mode for every input instead of np.array use torch.tensor, such that no pickling is needed.
-
-        #The following keys are needed for the standard model: (The Examples provided are the ones used by us for the MW model)
-        #   "processor": A processor class that is used to process the data. This is needed for the training and sampling. E.g. "Processor_cond"
-        #   "processor_args": A dict of arguments that are needed to initialize the processor. E.g. {}
-        #   "processor_data": A dict with the args that are needed to get the data from the processor, contains probably only 1 key, the data folder. E.g. {"folder": "all_sims"}
-        #   "processor_clean": A dict with the args that are needed to clean the data from the processor. E.g. {"N_min":500}
-        #   "flow_hyper": A dict with the hyperparmeters of the flow, see flowcode.NSFlow for details. E.g. {"n_layers":24, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":(512,8,0.2)}
-        #   "subset_params": Dict for obtaining the right subset. Specify comp_use(optional), cond_fn, use_fn_constructor, as well as leavout_key and leavout_vals (list) to leave out galaxys during training.
-        #       Function is first called with empty leavout_vals to get total data and then with specified levout_vals for training set. E.g. {"cond_fn": "cond_M_stars_2age_avZ", "use_fn_constructor": "construct_all_galaxies_leavout", "leavout_key": "id", "leavout_vals": []}
-        #   "data_prep_args": Args to processor.Data_to_flow, includes transformation_functions, transformation_components, inverse_transformations, transformation_logdets(optional). E.g. {"transformation_functions":("np.log10",), "transformation_components":(["M_stars"],), "inverse_transformations":("10**x",)}
-        #The class will save the following things additionally:
-        #   "std": The standard deviation attribute of the processor.
-        #   "mean": The mean attribute of the processor.
-        #   "coponent_names": The component names attribute of the processor.
-        #   "cond_names": The conditional names attribute of the processor.
-        #   "flow_dict": The state_dict of the flow.
-        #   "loss_history": A list of the loss history during training.
-
+        #To do: rewrite init to be more flexible for reuse on custom processors, flows etc.
+        #(E.g. DI or dedicated _load_processor, _load_flow etc. methods)
         if isinstance(definition, str):
             #Load from file
             definition = torch.load(definition, map_location="cpu", weights_only=safe_mode)
@@ -308,6 +299,12 @@ class GalacticFlow:
             Batch size.
         gamma : float
             Learning rate decay factor.
+        device : str or torch.device
+            Device to train on. E.g. "cuda:0" or "cpu".
+        info : bool, (optional), default: False
+            Whether to print some information about the training time.
+        update_textfile : str or bool, (optional), default: False
+            Whether to update a textfile (given by the string) with the loss history during training or print it to the console.
         """
 
         #Check if model is prepared
@@ -787,13 +784,27 @@ Leaky ReLU slope: {flow_hypers["network_args"][2]}"""
 #Example for a definition dictionary
 #We recommend to use this as a template for your own models. Simply copy and paste and change the values accordingly.
 example_definition = {
+    #Processor tu use (str as registered in func_handle)
     "processor": "Processor_cond",
+    #Processor init args
     "processor_args": {},
+    #Processor get_data args here folder name with data
     "processor_data": {"folder": "all_sims"},
+    #Processor cleaning_function args
     "processor_clean": {"N_min":500},
-    "flow_hyper": {"n_layers":24, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":torch.tensor([512,8,0.2])},
-    "subset_params": {"cond_fn": "cond_M_stars_2age_avZ", "use_fn_constructor": "construct_all_galaxies_leavout", "leavout_key": "id", "leavout_vals": []},
-    "data_prep_args": {"transformation_functions":("np.log10",), "transformation_components":(["M_stars"],), "inverse_transformations":("10**x",)}
+    #Flow hyperparameters
+    "flow_hyper": {"n_layers":14, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":torch.tensor([128,4,0.2])},
+    #Parameters for choosing the subset of the data to use:
+    #cond_fn: The function that computes/determines the condition for each galaxy. (See Processor_cond.choose_subset() for details.)
+    #use_fn_constructor: The function that constructs the subset of the data to use. (See Processor_cond.choose_subset() for details.)
+    #Will be called with leavout_key and leavout_vals as kwargs. I.e. will leavout galaxies that have galaxy["galaxy"][leavout_key] in leavout_vals.
+    #The remaining galaxies are used for training.
+    #use_fn_constructor is also once called with leavout_vals=[] to construct the full dataset for comparing (i.e. include validation set)
+    "subset_params": {"cond_fn": "cond_M_stars_2age_avZ", "use_fn_constructor": "construct_all_galaxies_leavout", "leavout_key": "id", "leavout_vals": [66, 20, 88, 48, 5]},
+    #Parameters to processor.Data_to_flow
+    #transformation_components[i] will be transformed with transformation_functions[i] and the corresponding inverse transformation is given by inverse_transformations[i]
+    #transformation_logdets[i] is the logdet of the transformation_functions[i], needed in case of pdf evaluation.
+    "data_prep_args": {"transformation_functions":("np.log10",), "transformation_components":(["M_stars"],), "inverse_transformations":("10**x",), "transformation_logdets":("logdet_log10",)}
 }
 
 #Function for seperate process, parallel training
@@ -826,34 +837,12 @@ def _train_seperate(definition, gpu_id, unique_id, queue, loading_result_finishe
     loading_result_finished.wait()
 
 
-    # #Test mode...
-    # try:
-    #     time.sleep(5)
-    #     random_int = np.random.randint(0,100)
-    #     if random_int > 20:
-    #         print(f"Call with rank {unique_id}, gpu_id {gpu_id} and {train_kwargs} is supposed to crash.")
-    #         distr = torch.distributions.Normal(torch.zeros(2), torch.ones(2))
-    #         point = torch.ones(2)*torch.nan
-    #         result = distr.log_prob(point)
-    #     else:
-    #         print(f"Call with rank {unique_id}, gpu_id {gpu_id} and {train_kwargs} is supposed to work.")
-    #         result = definition["identif"]+torch.randn(10**6)/100
-    # except ValueError as e:
-    #     result = e
-    # queue.put((unique_id, gpu_id, result))
-
-    # #time.sleep(1)
-    # #Wait for loading to finish
-    # #We do this part below such that the the child process only terminates after the tensor is fully obtained
-    # #Not just the reference to it, which is sent over the queue
-    # loading_result_finished.wait()
-
-
 def train_GF(models, GPUs, train_kwargs, filenames=None, max_restart = 2):
     """
     Train a list of GalacticFlow models in parallel on a list of GPUs.
     Each model is trained in a seperate process on its own GPU. The processes are monitored and restarted if they crash.
     If training is done the GPU is freed again.
+    See Notes for important remarks.
 
     Parameters
     ----------
@@ -898,6 +887,12 @@ def train_GF(models, GPUs, train_kwargs, filenames=None, max_restart = 2):
     >>> train_kwargs = [{"epochs": 10, "batch_size": 1024, "init_lr": 0.00009, "gamma": 0.998, "update_textfile":f"model{i}"} for i in range(3)]
     >>> train_GF(models, use_gpus, train_kwargs, filenames)
     >>> #Now model1, model2 and model3 are trained on GPUs 0,1,2 respectively and saved to model1.pth, model2.pth and model3.pth
+
+    Notes
+    -----
+    
+    It may happen that some child processes may be alive if an unexpected error occurs and you have to kill them manually.
+    This function is not yet completly failsafe against certain multiprocessing errors.
     """
 
     #Check the models input
@@ -972,7 +967,6 @@ def train_GF(models, GPUs, train_kwargs, filenames=None, max_restart = 2):
             restarts[unique_id] += 1
         else:
             #Model finished successfully or crashed too often, restart a new one
-            #print(f"Finished training of model {unique_id} on GPU {gpu_id}.")
             indices_done.append(unique_id)
 
             #Save model
@@ -981,13 +975,11 @@ def train_GF(models, GPUs, train_kwargs, filenames=None, max_restart = 2):
             models_out[unique_id] = save_dict
             #Also save to file, such that is is already available
             if filenames[unique_id] is not None and save_dict is not None:
-                #print(f"Saving model {unique_id} to {filenames[unique_id]}.")
                 torch.save(save_dict, filenames[unique_id])
 
             #Restart a new process if there are still models to train
             for unique_id in range(len(models)):
                 if unique_id in indices_to_do:
-                    #print(f"Starting training of model {unique_id} on GPU {gpu_id}.")
                     event = ctx.Event()
                     signals[unique_id] = event
                     p = ctx.Process(target=_train_seperate, args=(models[unique_id], gpu_id, unique_id, queue, event), kwargs=train_kwargs[unique_id])

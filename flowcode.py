@@ -1,3 +1,15 @@
+"""
+Provides the code for the Normalizing Flow. Includes Convolution, Coupling Layer, MLP, the Normalizing Flow model and the training function.
+
+Code inspired by
+https://github.com/tingyuansen/deep-potential (https://doi.org/10.3847/1538-4357/ac5023)
+and https://github.com/karpathy/pytorch-normalizing-flows
+"""
+####
+#This code could be updated and improved in many ways to make it more flexible and reusable
+#However, it works and is fine for now
+####
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,22 +18,13 @@ import torch.optim as optim
 import itertools
 import time
 from pandas import DataFrame
-
 import copy
-#import device_use
-#Choose device
-#device = device_use.device_use
-
-#Rework device managment:
-#Model should be fully moved to any desired device by calling model.to(device)
-#This means any tensors floating arround and manually moved to device should be covered by model.to(device)
-#I.e. taking the device of paramteter or being registered as buffer or simpl overwriting the to(device) method
 
 
 # MLP
 #Basis for NF coupling layer, to represent RQS parameters later
-
 class MLP(nn.Module):
+    """A simple MLP with LeakyReLU activations."""
     def __init__(self, n_in, n_out, n_hidden, n_layers=4, neg_slope=0.2):
         super().__init__()
         ins = torch.ones(n_layers)*n_hidden
@@ -40,16 +43,17 @@ class MLP(nn.Module):
 #Invertible 1x1 convolution like in GLOW paper
 #Generalise Permutation with learnt W matrix
 class GLOW_conv(nn.Module):
+    """
+    Invertible 1x1 convolution like in GLOW paper Generalise Permutation with learnt W matrix.
+    See https://arxiv.org/abs/1807.03039 for details.
+    """
     def __init__(self, n_dim):
         super().__init__()
         self.n_dim = n_dim
+
+        #Initialize W as orthogonal matrix and decompose it into P, L, U, the learned parameters
         W_initialize = nn.init.orthogonal_(torch.randn(self.n_dim, self.n_dim))
-        #P, L_, U_ = torch.lu_unpack(*torch.linalg.lu_factor(W_initialize))
-        #P, L_, U_ = torch.lu_unpack(*torch.lu(W_initialize))
         P, L_, U_ = torch.linalg.lu(W_initialize)
-        #P = P.to(device)
-        #L_ = L_.to(device)
-        #U_ = U_.to(device)
         
         
         #P not changed but it needs to be stored in the state_dict
@@ -71,12 +75,7 @@ class GLOW_conv(nn.Module):
         
         W = self.P@L@(U+S)
         logdetW = torch.sum(torch.log(torch.abs(self.S)))
-        ##Debug
-        #print("W:",W)
-        #print("P:",self.P)
-        #print("L:",L)
-        #print("U:",U)
-        #print("S:",S)
+
         return W, logdetW
     
     #Pass condition as extra argument, that is not used in the convolution
@@ -84,15 +83,7 @@ class GLOW_conv(nn.Module):
     #will be transformed
     def forward(self, x, x_condition):
         W, logdetW = self._get_W_and_ld()
-        ##Debug
-        #print(torch.mean(torch.abs(x)))
         y = x@W
-        #print(torch.mean(torch.abs(y)))
-        #print("W:",W)
-        #print("NEW")
-
-        ## Debug
-        #logdetW = torch.sum(torch.log(torch.abs(self.S)))
         return y, logdetW
     
     def backward(self, y, x_condition):
@@ -101,36 +92,36 @@ class GLOW_conv(nn.Module):
         logdetW_inv = -logdetW_inv
         W_inv = torch.linalg.inv(W)
         x = y@W_inv
-        
-        ##Debug
-        #logdetW_inv = -torch.sum(torch.log(torch.abs(self.S)))
-        
         return x, logdetW_inv
 
 #To evaluate a spline we need to know in which bin
 #x falls.
 def find_bin(values, bin_boarders):
-    #Make shure that a value=uppermost boarder is in last bin not last+1
+    #Make sure that a value=uppermost boarder is in last bin not last+1
     bin_boarders[..., -1] += 10**-6
     return torch.sum((values.unsqueeze(-1)>=bin_boarders),dim=-1)-1
 
-#Write a function that takes a parametrisation of RQS and points and evaluates RQS or inverse
+#Takes a parametrisation of RQS and points and evaluates RQS or inverse
 #Splines from [-B,B] identity else
 #Bin widths normalized for 2B interval size
 def eval_RQS(X, RQS_bin_widths, RQS_bin_heights, RQS_knot_derivs, RQS_B, inverse=False):
-    #Get boarders of bins as cummulative sum as in NSF paper
+    """
+    Function to evaluate points inside [-B,B] with RQS splines, given by the parameters.
+    See https://arxiv.org/abs/1906.04032
+    """
+    #Get boarders of bins as cummulative sum
     #As they are normalized this goes up to 2B
     #Represents upper boarders
     bin_boardersx = torch.cumsum(RQS_bin_widths, dim=-1)
+
     #We shift so that they cover actual interval [-B,B]
     bin_boardersx -= RQS_B
+
     #Now make sure we include all boarders i.e. include lower boarder B
     #Also for bin determination make sure upper boarder is actually B and
     #doesn't suffer from rounding (order 10**-7, searching algorithm would anyways catch this)
     bin_boardersx = F.pad(bin_boardersx, (1,0), value=-RQS_B)
     bin_boardersx[...,-1] = RQS_B
-    
-    #update widths?
 
 
     #Same for heights
@@ -142,19 +133,9 @@ def eval_RQS(X, RQS_bin_widths, RQS_bin_heights, RQS_knot_derivs, RQS_B, inverse
     
     #Now with completed parametrisation (knots+derivatives) we can evaluate the splines
     #For this find bin positions first
-    
-    ##Debug
-    #print(X.shape)
-    #print(bin_boardersx.shape)
-    
     bin_nr = find_bin(X, bin_boardersy if inverse else bin_boardersx)
     
     #After we know bin number we need to get corresponding knot points and derivatives for each X
-    
-    #Debug
-    #print(bin_boardersx.shape, bin_nr.unsqueeze(-1).shape)
-    #print(bin_nr)
-    
     x_knot_k = bin_boardersx.gather(-1, bin_nr.unsqueeze(-1)).squeeze(-1)
     x_knot_kplus1 = bin_boardersx.gather(-1, (bin_nr+1).unsqueeze(-1)).squeeze(-1)
     
@@ -164,8 +145,9 @@ def eval_RQS(X, RQS_bin_widths, RQS_bin_heights, RQS_knot_derivs, RQS_B, inverse
     delta_knot_k = RQS_knot_derivs.gather(-1, bin_nr.unsqueeze(-1)).squeeze(-1)
     delta_knot_kplus1 = RQS_knot_derivs.gather(-1, (bin_nr+1).unsqueeze(-1)).squeeze(-1)
     
+
+    #Evaluate splines, as shown in NSF paper
     s_knot_k = (y_knot_kplus1-y_knot_k)/(x_knot_kplus1-x_knot_k)
-    
     if inverse:
         a = (y_knot_kplus1-y_knot_k)*(s_knot_k-delta_knot_k)+(X-y_knot_k)*(delta_knot_kplus1+delta_knot_k-2*s_knot_k)
         b = (y_knot_kplus1-y_knot_k)*delta_knot_k-(X-y_knot_k)*(delta_knot_kplus1+delta_knot_k-2*s_knot_k)
@@ -178,37 +160,23 @@ def eval_RQS(X, RQS_bin_widths, RQS_bin_heights, RQS_knot_derivs, RQS_B, inverse
         #No sum yet, so we can later keep track which X weren't in the intervall and need logdet 0
         logdet = -torch.log(dY_dX)
 
-        ##Debug Variant
-
-        #logdet = -torch.log(s_knot_k**2*(delta_knot_kplus1*Xi**2+2*s_knot_k*Xi*(1-Xi)+delta_knot_k*(1-Xi)**2)) + 2*torch.log(s_knot_k+(delta_knot_kplus1+delta_knot_k-2*s_knot_k)*Xi*(1-Xi))
     else:
-        ##Debug
         Xi = (X-x_knot_k)/(x_knot_kplus1-x_knot_k)
-        #print("Xi",Xi.shape)
         Y = y_knot_k+((y_knot_kplus1-y_knot_k)*(s_knot_k*Xi**2+delta_knot_k*Xi*(1-Xi)))/(s_knot_k+(delta_knot_kplus1+delta_knot_k-2*s_knot_k)*Xi*(1-Xi))
-        #print("Y",Y.shape)
         dY_dX = (s_knot_k**2*(delta_knot_kplus1*Xi**2+2*s_knot_k*Xi*(1-Xi)+delta_knot_k*(1-Xi)**2))/(s_knot_k+(delta_knot_kplus1+delta_knot_k-2*s_knot_k)*Xi*(1-Xi))**2
-        #print("dY",dY_dX)
         logdet = torch.log(dY_dX)
 
-
-
-        ## Debug variant
-        #logdet = torch.log(s_knot_k**2*(delta_knot_kplus1*Xi**2+2*s_knot_k*Xi*(1-Xi)+delta_knot_k*(1-Xi)**2)) - 2*torch.log(s_knot_k+(delta_knot_kplus1+delta_knot_k-2*s_knot_k)*Xi*(1-Xi))
-        
     return Y, logdet
 
+
 def RQS_global(X, RQS_bin_widths, RQS_bin_heights, RQS_knot_derivs, RQS_B, inverse=False):
+    """Evaluates RQS spline, as given by parameters, inside [-B,B] and identity outside. Uses eval_RQS."""
     inside_interval = (X<=RQS_B) & (X>=-RQS_B)
+
     Y = torch.zeros_like(X)
     logdet = torch.zeros_like(X)
     
-    ##Debug
-    #print("split_int",X[inside_interval],X[~inside_interval])
-    #print(X.shape)
-    #print(inside_interval.shape,RQS_bin_widths.shape)
     Y[inside_interval], logdet[inside_interval] = eval_RQS(X[inside_interval], RQS_bin_widths[inside_interval,:], RQS_bin_heights[inside_interval,:], RQS_knot_derivs[inside_interval,:], RQS_B, inverse)
-    
     Y[~inside_interval] = X[~inside_interval]
     logdet[~inside_interval] = 0
     
@@ -218,12 +186,32 @@ def RQS_global(X, RQS_bin_widths, RQS_bin_heights, RQS_knot_derivs, RQS_B, inver
     return Y, logdet
 
 
-def one_fn(*args):
-    return 1
-
-
 class NSF_CL(nn.Module):
+    """Neural spline flow coupling layer. See https://arxiv.org/abs/1906.04032 for details.
+    
+    Implements the forward and backward transformation."""
     def __init__(self, dim_notcond, dim_cond, split=0.5, K=8, B=3, network = MLP, network_args=(16,4,0.2)):
+        """
+        Constructs a Neural spline flow coupling layer.
+
+        Parameters
+        ----------
+
+        dim_notcond : int
+            The dimension of the input, i.e. the dimension of the data that will be transformed.
+        dim_cond : int
+            The dimension of the condition. If 0, the coupling layer is not conditioned.
+        split : float, default: 0.5
+            The fraction of the input that will be transformed. The rest will be left unchanged. The default is 0.5.
+        K : int, default: 8
+            The number of bins used for the spline.
+        B : float, default: 3
+            The interval size of the spline.
+        network : nn.Module, default: MLP
+            The neural network used to determine the parameters of the spline.
+        network_args : tuple, default: (16,4,0.2)
+            The arguments for the neural network.
+        """
         super().__init__()
         self.dim = dim_notcond
         self.dim_cond = dim_cond
@@ -241,25 +229,25 @@ class NSF_CL(nn.Module):
             
         
     def forward(self, x, x_cond):
-        ##Debug
-        #print("beginning fw NSF_CL",x)
+        #Divide input into unchanged and transformed part
         unchanged, transform = x[..., :self.split1], x[..., self.split1:]
-        #print("after split",unchanged,transform)
-        #Conditioned or not
+
+        #Get parameters from neural network based on unchanged part and condition
         if self.dim_cond>0:
             thetas = (self.net_cond(x_cond)*self.net(unchanged)).reshape(-1, self.split2, 3*self.K-1)
         else:
             thetas = self.net(unchanged).reshape(-1, self.split2, 3*self.K-1)
         
+        #Normalize NN outputs to get widths, heights and derivatives
         widths, heights, derivs = torch.split(thetas, self.K, dim=-1)
         widths = F.softmax(widths, dim=-1)*2*self.B
         heights = F.softmax(heights, dim=-1)*2*self.B
         derivs = F.softplus(derivs)
         derivs = F.pad(derivs, pad=(1,1), value=1)
         
+        #Evaluate splines
         transform, logdet = RQS_global(transform, widths, heights, derivs, self.B)
-        ##Debug
-        #print("after rqs",unchanged,transform)
+
         return torch.hstack((unchanged,transform)), logdet
     
     def backward(self, x, x_cond):
@@ -282,7 +270,30 @@ class NSF_CL(nn.Module):
     
     
 class NSF_CL2(nn.Module):
+    """Neural spline flow double coupling layer. First transforms the first half of the input, then the second half.
+    Works only for even dimensions.
+    
+    Implements the forward and backward transformation."""
     def __init__(self, dim_notcond, dim_cond, K=8, B=3, network = MLP, network_args=(16,4,0.2)):
+        """
+        Constructs a Neural spline flow double coupling layer.
+
+        Parameters
+        ----------
+
+        dim_notcond : int
+            The dimension of the input, i.e. the dimension of the data that will be transformed.
+        dim_cond : int
+            The dimension of the condition. If 0, the coupling layer is not conditioned.
+        K : int, default: 8
+            The number of bins used for the spline.
+        B : float, default: 3
+            The interval size of the spline.
+        network : nn.Module, default: MLP
+            The neural network used to determine the parameters of the spline.
+        network_args : tuple, default: (16,4,0.2)
+            The arguments for the neural network.
+        """
         super().__init__()
         self.dim = dim_notcond
         self.dim_cond = dim_cond
@@ -291,7 +302,7 @@ class NSF_CL2(nn.Module):
         
         self.split = self.dim//2
         
-        #Works only for even?
+        #Works only for even
         self.net1 = network(self.split, (3*self.K-1)*self.split, *network_args)
         self.net2 = network(self.split, (3*self.K-1)*self.split, *network_args)
         
@@ -300,21 +311,26 @@ class NSF_CL2(nn.Module):
             self.net_cond2 = network(dim_cond, (3*self.K-1)*self.split, *network_args)
         
     def forward(self, x, x_cond):
+        #Divide input into first and second half
         first, second = x[..., self.split:], x[..., :self.split]
         
+        #Get parameters from neural network based on unchanged part and condition
         if self.dim_cond>0:
             thetas = (self.net_cond1(x_cond)*self.net1(second)).reshape(-1, self.split, 3*self.K-1)
         else:
             thetas = self.net1(second).reshape(-1, self.split, 3*self.K-1)
         
+        #Normalize NN outputs to get widths, heights and derivatives
         widths, heights, derivs = torch.split(thetas, self.K, dim=-1)
         widths = F.softmax(widths, dim=-1)*2*self.B
         heights = F.softmax(heights, dim=-1)*2*self.B
         derivs = F.softplus(derivs)
         derivs = F.pad(derivs, pad=(1,1), value=1)
-            
+        
+        #Evaluate splines
         first, logdet = RQS_global(first, widths, heights, derivs, self.B)
         
+        #Repeat for second half
         if self.dim_cond>0:
             thetas = (self.net_cond2(x_cond)*self.net2(first)).reshape(-1, self.split, 3*self.K-1)
         else:
@@ -363,23 +379,32 @@ class NSF_CL2(nn.Module):
         logdet += logdet_temp
             
         return torch.hstack((second,first)), logdet
-        
-# ---- The following functions are needed for NF-sails sampling ----
 
-
-
-
-# ---- End of functions needed for NF-sails sampling ----
 
 class NSFlow(nn.Module):
+    """Normalizing flow model for neural spline flows. Alternates coupling layers with GLOW convolutions Combines coupling layers and convolution layers."""
     def __init__(self, n_layers, dim_notcond, dim_cond, CL, **kwargs_CL):
+        """
+        Constructs a Normalizing flow model.
+
+        Parameters
+        ----------
+
+        n_layers : int
+            The number of flow layers. Flow layers consist of a coupling layer and a convolution layer.
+        dim_notcond : int
+            The dimension of the input, i.e. the dimension of the data that will be transformed.
+        dim_cond : int
+            The dimension of the condition. If 0, the coupling layer is not conditioned.
+        CL : nn.Module
+            The coupling layer to use. Either NSF_CL or NSF_CL2 in the current implementation.
+        **kwargs_CL : dict
+            The arguments for the coupling layer.
+        """
         super().__init__()
         self.dim = dim_notcond
         self.dim_cond = dim_cond
 
-
-        '''coupling_layers = itertools.repeat(CL(dim_notcond, dim_cond, **kwargs_CL), n_layers)
-        conv_layers = itertools.repeat(GLOW_conv(dim_notcond), n_layers)'''
         coupling_layers = [CL(dim_notcond, dim_cond, **kwargs_CL) for _ in range(n_layers)]
         conv_layers = [GLOW_conv(dim_notcond) for _ in range(n_layers)]
 
@@ -399,8 +424,6 @@ class NSFlow(nn.Module):
         logdet = torch.zeros(x.shape[0]).to(x.device)
         
         for layer in self.layers:
-            ##Debug
-            #print(x)
             x, logdet_temp = layer.forward(x, x_cond)
             logdet += logdet_temp
             
@@ -419,109 +442,21 @@ class NSFlow(nn.Module):
         return x, logdet
     
     def sample_Flow(self, number, x_cond):
+        """Samples from the prior and transforms the samples with the flow.
+        
+        Parameters
+        ----------
+        
+        number : int
+            The number of samples to draw. If a condition is given, the number of samples must be the same as the length of conditions.
+        x_cond : torch.Tensor
+            The condition for the samples. If dim_cond=0 enter torch.Tensor([]).
+        """
         return self.backward(self.prior.sample(torch.Size((number,))), x_cond)[0]
     
-    #NF sails sampling (Sampling with Langevin dynamics in the latent space) both local and global exploration
-    #Local is RMMALA, global is independent MH
 
-    def sample_sails(self, number, x_cond, chain_length, time_step, probability):
-        if number != x_cond.shape[0]:
-            raise ValueError("Number of samples and number of conditions must be the same")
-        #We it would be optimal to have only one markov chain, but:
-        #1. We need different markov chains for each condition as the pdf is different
-        #2. We can expect a large incease in speed if we split the sampling into different markov chains (while sacrificing some accuracy)
-
-        #Determine the number of chains needed
-        #Number of unique conditions in x_cond
-        unique_cond, n_unique_cond = torch.unique(x_cond, dim=0, return_counts=True)
-        #Number of chains needed for each condition if chain length is chain_length
-        n_chains = torch.ceil(n_unique_cond/chain_length).int()
-        n_chains_total = n_chains.sum()
-        #How many are over the desired amount, throw them away later
-        n_too_many = n_chains*chain_length - n_unique_cond
-
-        #Now prepare the conditions for sampling, one for each chain
-        x_cond_sample = torch.repeat_interleave(unique_cond, n_chains, dim=0)
-
-        #Prepare the samples
-        samples = torch.zeros(chain_length+1, n_chains_total, self.dim).to(x_cond.device)
-
-        #Draw first sample for each chain
-        z_k = self.sample_Flow(n_chains_total, x_cond_sample)
-        samples[0] = z_k
-
-        for k in range(chain_length):
-            z_k = samples[k]
-            #Choose kernel by uniform probability
-            u = torch.rand(n_chains_total)
-            #Local or global exploration
-            z_k_plus_1 = torch.where(u<probability, self._sample_RMMALA(z_k, x_cond_sample, time_step).T, self.sample_I_MH(z_k, x_cond_sample).T).T
-            #Store samples
-            samples[k+1] = z_k_plus_1
-
-        #For each condition, throw away the extra samples
-        #(not implemented yet....) #Maybe in loop throw away last markov samples from last chain (i.e. set nan)
-        #Get the chain indices with cumsum n_chains
-        #Append condition (x_cond_sample) to samples (for sorting)
-        samples = torch.cat((samples, x_cond_sample.repeat(chain_length+1,1,1)), dim=-1)
-        #Stack together while ignoring the first sample
-        samples = samples[1:].reshape(-1, self.dim+self.dim_cond)
-
-        #Restore the original order (sort by condition)
-        #Get map from sorted to original
-        arg_order_x_cond = torch.argsort(torch.argsort(x_cond, dim=0)[:,0], dim=0)
-        #Sort samples by condition
-        argsort_samples = torch.argsort(samples[:,-self.dim_cond:], dim=0)[:,0]
-        samples = samples[argsort_samples]
-        #Sort back to original order (apply map)
-        samples = samples[arg_order_x_cond]
-
-        samples = samples[:, :-self.dim_cond]
-        return samples
-    
-    #RMMALA sampling
-    def _sample_RMMALA(self, z_k, x_cond, time_step):
-        #Draw candidate
-        xi = self.prior.sample(z_k[0].shape)
-        #Compute score
-        score = self._latent_score(z_k, x_cond)
-        z_prime = 1
-
-
-    def _latent_score(self, z, x_cond):
-        #(s^tilde_Z(z))
-        #s^tilde_Z(z) = J^-1(z)*grad_z log q^tilde_Z(z) = grad_x log q_X(x)
-        #i.e. the latent score is equal to the score of q_X(x) in the original space
-        x = self.backward(z, x_cond)[0]
-        with torch.inference_mode(False):
-            x = x.clone()
-            x.requires_grad_(True)
-            #To ignore model parameter gradients and only track x gradients:
-            for param in self.parameters():
-                param.requires_grad_(False)
-            _, logdet, prior_z_logprob = self.forward(x, x_cond)#Here model gradients are still tracked, which is not needed
-            log_prob = logdet + prior_z_logprob
-            score = torch.autograd.grad(log_prob, x, grad_outputs=torch.ones_like(log_prob))[0]
-            score = score.detach()
-            for param in self.parameters():
-                param.requires_grad_(True)
-        return score
-    
-    def jacobian_matrix(self, z, x_cond, mode="forward"):
-        #Compute Jacobian of forward or backward transformation
-        #Just use automatic differentiation. Parts of J coud be tracked analytically, but this is not implemented
-        #Since autograd is anyways used for The other parts and we ptoentially have a lot of layers i.e. a lot of matrix multiplications, this should not be too slow (i hope)
-        
-        #First turn of gradient tracking for model parameters
-        for param in self.parameters():
-            param.requires_grad_(False)
-
-        #Turn off inference mode
-        with torch.inference_mode(False):
-            True
-
-    
     def to(self, device):
+        #Modified to also move the prior to the right device
         super().to(device)
         self.prior = torch.distributions.Normal(torch.zeros(self.dim).to(device), torch.ones(self.dim).to(device))
         return self
