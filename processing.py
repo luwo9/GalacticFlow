@@ -935,3 +935,58 @@ class Processor_cond():
                 galaxy_ = galaxy_[key]
             result[i] = galaxy_
         return result
+    
+    #Two methods to load and save the processor state from and to a definition dictionary. (Compatible with the API.GalacticFlow)
+
+    @classmethod
+    def load_API(cls, definition: dict):
+        """Method to load the processor from a definition dictionary in the API."""
+        
+        init_args = definition["processor_args"]
+        processor = cls(**init_args)
+        from API import _handle_func
+        processor.trf_fn = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["transformation_functions"])
+        processor.trf_comp = definition["data_prep_args"]["transformation_components"]
+        processor.trf_fn_inv = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["inverse_transformations"])
+        processor.trf_logdet = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["transformation_logdets"]) if "transformation_logdets" in definition["data_prep_args"] else None
+
+        #Make sure to only do this if load is not used for first initialization
+        is_loaded = "was_saved" in definition and definition["was_saved"]
+        if is_loaded:
+            for k,v in cls._load_data_dependent(definition).items():
+                setattr(processor, k, v)
+
+        return processor
+            
+            
+    @staticmethod
+    def _load_data_dependent(definition: dict):
+        if all([definition[key] is not None for key in ["mu_vals", "std_vals", "mu_names", "std_names"]]):
+            mu = pd.Series(definition["mu_vals"].numpy(), index=definition["mu_names"])
+            std = pd.Series(definition["std_vals"].numpy(), index=definition["std_names"])
+            return_dict = {"mu": mu, "std": std,
+                           "component_names": definition["component_names"], "cond_names": definition["cond_names"]}
+        else:
+            return_dict = {"mu": None, "std": None,
+                           "component_names": definition["component_names"], "cond_names": definition["cond_names"]}
+        
+        return return_dict
+
+
+
+    def save_API(self):
+        """Method to save the processor to a definition dictionary in the API."""
+        inference_ready = hasattr(self, "mu") and (self.mu is not None)
+        if inference_ready:
+            mu_vals = torch.from_numpy(self.mu.values)
+            std_vals = torch.from_numpy(self.std.values)
+            mu_names = self.mu.index.to_list()
+            std_names = self.std.index.to_list()
+            return_dict = {"mu_vals": mu_vals, "std_vals": std_vals, "mu_names": mu_names, "std_names": std_names,
+                           "component_names": self.component_names, "cond_names": self.cond_names}
+        else:
+            return_dict = {"mu_vals": None, "std_vals": None, "mu_names": None, "std_names": None,
+                           "component_names": self.component_names, "cond_names": self.cond_names}
+            
+        return return_dict, inference_ready
+    

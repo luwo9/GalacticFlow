@@ -460,6 +460,28 @@ class NSFlow(nn.Module):
         super().to(device)
         self.prior = torch.distributions.Normal(torch.zeros(self.dim).to(device), torch.ones(self.dim).to(device))
         return self
+    
+    @classmethod
+    def load_API(cls, definition):
+        """Method to load the flow from a definition dict in the API."""
+        from API import _handle_func
+        flow_def = definition["flow_hyper"].copy()
+        flow_def["CL"] = _handle_func(flow_def["CL"])
+        flow_def["network"] = _handle_func(flow_def["network"])
+        flow_def["network_args"] = (int(flow_def["network_args"][0]), int(flow_def["network_args"][1]), float(flow_def["network_args"][2]))
+        flow = cls(**flow_def)
+
+        is_loaded = "was_saved" in definition and definition["was_saved"]
+
+        if is_loaded:
+            flow.load_state_dict(definition["flow_dict"])
+            
+        return flow
+    
+    def save_API(self):
+        """Method to save the flow in the API."""
+        return {"flow_dict": self.state_dict()}
+
 
 
 #Function to get the right hyperparameters for the model.give_kwargs update this if you change the model

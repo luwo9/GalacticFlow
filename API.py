@@ -52,9 +52,9 @@ class GalacticFlow:
     The class is meant to be used in the following way:
     1. Create an object of this class, where either:
         a) The definition is given as a dict of dicts, that contains all the information needed to define the model. (If a new model is to be tested)
-        b) A file path to an already saved (abstract) model is given. (If a model is just to sampled, or retrained etc.)
+        b) A file path to an already saved (abstract) model is given. (If a model is just to be sampled, or retrained etc.)
     2. Call the desired method on the object. (E.g. train, sample, evaluate_pdf etc.)
-    3. Save this object by simly calling the save method. Without any further information this can then be used for 1. b) again.
+    3. Save this object by simply calling the save method. Without any further information this can then be used for 1. b) again.
 
     Parameters
     ----------
@@ -136,27 +136,43 @@ class GalacticFlow:
         The definition exactly describes where to get the data from, how to process it, what the flow architecture is etc.
         This allows easy saving and loading of the model, as well as easy reproducibility.
         When saving the model additionally weights, loss history, scaling parameters etc. are saved and can later be loaded.
-        This allows do easily make inference with the model, without having to know the exact definition of the model.
+        This allows to easily make inference with the model, without having to know the exact definition of the model.
 
-        The following keys are needed for the standard model: (The Examples provided are the ones used by us for the first MW models)
+        The keys the definition must have may depend on your custom flow or processor supplied.
+
+        Below we explain the parmeters and give examples that we used during testing, although they may not be up to date.
+        See the template definition for details and more up to date parameters.
+        
+        However this GalacticFlow class  requires the following keys to be present regardless of the flow or processor:
         "processor": A processor class that is used to process the data. This is needed for the training and sampling. E.g. "Processor_cond"
-        "processor_args": A dict of arguments that are needed to initialize the processor. E.g. {}
-        "processor_data": A dict with the args that are needed to get the data from the processor, contains probably only 1 key, the data folder. E.g. {"folder": "all_sims"}
-        "processor_clean": A dict with the args that are needed to clean the data from the processor. E.g. {"N_min":500}
-        "flow_hyper": A dict with the hyperparmeters of the flow, see flowcode.NSFlow for details. E.g. {"n_layers":24, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":(512,8,0.2)}
-        "subset_params": Dict for obtaining the right subset. Specify comp_use(optional), cond_fn, use_fn_constructor, as well as leavout_key and leavout_vals (list) to leave out galaxys during training.
+        "flow": A flow class representing the normalizing flow. E.g. "NSFlow"
+        "subset_params": Dict for obtaining the right subset (E.g. Train/Test split). Specify comp_use(optional), cond_fn, use_fn_constructor, as well as leavout_key and leavout_vals (list) to leave out galaxys during training.
             Function is first called with empty leavout_vals to get total data and then with specified levout_vals for training set. E.g. {"cond_fn": "cond_M_stars_2age_avZ", "use_fn_constructor": "construct_all_galaxies_leavout", "leavout_key": "id", "leavout_vals": []}
-        "data_prep_args": Args to processor.Data_to_flow, includes transformation_functions, transformation_components, inverse_transformations, transformation_logdets(optional). E.g. {"transformation_functions":("np.log10",), "transformation_components":(["M_stars"],), "inverse_transformations":("10**x",)}
+        "flow_hyper": While this is dependend on the flow, it must contain at least the following keys:
+            "dim_notcond": The dimension of the data space.
+            "dim_cond": The dimension of the condition space.
+        
+        Furthermore to use the standard .prepare() method, the following keys are needed:
+        "processor_data": A dict passed to processor.get_data() to get the data. E.g. {"folder": "all_sims"}
+        "processor_clean": A dict passed to processor.constraindata() to clean the data. E.g. {"N_min":500}
+
+
+        Additionally, with our standard flow and processor, the following keys are needed:
+        "processor_args": A dict of arguments that are needed to initialize the processor. E.g. {}
+        "flow_hyper": A dict with the hyperparmeters of the flow, see flowcode.NSFlow for details. E.g. {"n_layers":24, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":(512,8,0.2)}
+        "data_prep_args": Args to processor.Data_to_flow, for normalizing the data before learning it, includes transformation_functions, transformation_components, inverse_transformations, transformation_logdets(optional). E.g. {"transformation_functions":("np.log10",), "transformation_components":(["M_stars"],), "inverse_transformations":("10**x",)}
 
         The class will save the following things additionally:
+        "was_saved": Whether the model was saved before or not, which will tell the API e.g. if it can expect to find the keys below or not.
+        "loss_history": A list of the loss history during training.
+
+        The saving(and loading) methods of our standard flow and processor will save(and load) the following things additionally:
+        (allows e.g. to make inference directly after loading)
         "std": The standard deviation attribute of the processor.
         "mean": The mean attribute of the processor.
         "coponent_names": The component names attribute of the processor.
         "cond_names": The conditional names attribute of the processor.
-        "flow_dict": The state_dict of the flow.
-        "loss_history": A list of the loss history during training.
-
-        See the template definition for details and more up to date parameters.
+        "flow_dict": The pytorch state_dict of the flow.4
 
         Notes
         -----
@@ -169,33 +185,13 @@ class GalacticFlow:
             #Load from file
             definition = torch.load(definition, map_location="cpu", weights_only=safe_mode)
         
-        #Wheather the model is loaded from a self.save file/definition or from a user defined definition
-        #If from self.save then flow_dict etc. are expected to be in the definition
-        self.is_loaded = "was_saved" in definition and definition["was_saved"]
+        #Load processor
+        processor = _handle_func(definition["processor"])
+        self.processor = processor.load_API(definition)
 
-        #Create processor
-        self.processor = _handle_func(definition["processor"])
-        self.processor = self.processor(**definition["processor_args"])
-
-        #Load processor attributes that are independent of the data i.e. always in the definition
-        self.processor.trf_fn = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["transformation_functions"])
-        self.processor.trf_comp = definition["data_prep_args"]["transformation_components"]
-        self.processor.trf_fn_inv = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["inverse_transformations"])
-        self.processor.trf_logdet = tuple(_handle_func(fn) for fn in definition["data_prep_args"]["transformation_logdets"]) if "transformation_logdets" in definition["data_prep_args"] else None
-
-        #Create flow model
-        flow_def = definition["flow_hyper"].copy()
-        flow_def["CL"] = _handle_func(flow_def["CL"])
-        flow_def["network"] = _handle_func(flow_def["network"])
-        flow_def["network_args"] = (int(flow_def["network_args"][0]), int(flow_def["network_args"][1]), float(flow_def["network_args"][2]))
-        self.flow = flowcode.NSFlow(**flow_def)
-
-        #If the model is loaded from file recover  model + relavant processor attributes
-        if self.is_loaded:
-            for k,v in self._processor_attrs_from_prepare_load(definition).items():
-                setattr(self.processor, k, v)
-            
-            self.flow.load_state_dict(definition["flow_dict"])
+        #Load flow
+        flow = _handle_func(definition["flow"])
+        self.flow = flow.load_API(definition)
 
 
         #Some important attributes
@@ -661,72 +657,40 @@ class GalacticFlow:
         >>> model.n_dim
         10
         """
-        untrained = len(self.loss_history) == 0
-        
-        unprepared = not hasattr(self.processor, "mu") or self.processor.mu is None
+        save_processor, prepared = self.processor.save_API()
+        #watch flow's device? but loading does already so maybe not that bad
+        save_flow = self.flow.save_API()
 
+        trained = len(self.loss_history) > 0
+
+        #Highlight possible errors
         if ensure_trained:
-            if unprepared:
-                raise RuntimeError("Model has never been prepared. Cannot save. If you want to save anyway, set ensure_trained=False.")
-            elif untrained:
-                raise RuntimeError("Model has never been trained. Cannot save. If you want to save anyway, set ensure_trained=False.")
-            else:
-                #Everything is okay
-                save_processor = self._processor_attrs_from_prepare_to_save()
+            if not trained:
+                raise RuntimeError("Model was never trained, cannot save. Use ensure_trained=False to save anyway.")
+            if not prepared:
+                raise RuntimeError("Model was never prepared, cannot save. Use ensure_trained=False to save anyway.")
         else:
-            if unprepared:
-                print("Warning: Model has never been prepared. Saving anyway with mu=None and std=None.")
-                save_processor = self._processor_attrs_from_prepare_to_save(prepared=False)
-                #Setting to None will ensure that it is saved, but can not be used for inference by accident
-                #But this may not be catched in inference if a custom Processor Class does ,e.g., define mu and std as 0 and 1 in __init__... maybe some better way to do this?
-            elif untrained:
-                print("Warning: Model has never been trained. Saving anyway.")
-                save_processor = self._processor_attrs_from_prepare_to_save()
-            else:
-                #Everything is okay
-                save_processor = self._processor_attrs_from_prepare_to_save()
+            if not trained:
+                print("Warning: Model was never trained, saving anyway.")
+            if not prepared:
+                print("Warning: Model was never prepared, saving anyway.")
+
 
         #Use definition of model to save + extra keywords (see __init__)
         save_dict = self.definition.copy()
 
-        #Add processor state
+        #Add processor state and flow state
         save_dict.update(save_processor)
-        #watch flow's device? but loading does already so maybe not that bad
-        save_dict["flow_dict"] = self.flow.state_dict()
+        save_dict.update(save_flow)
+
         save_dict["loss_history"] = torch.tensor(self.loss_history)
-
-
         save_dict["was_saved"] = True #Flag that the model has been saved
+
         if path is None:
             return save_dict
         else:
             torch.save(save_dict, path)
 
-    def _processor_attrs_from_prepare_to_save(self, prepared=True):
-        if prepared:
-            mu_vals = torch.from_numpy(self.processor.mu.values)
-            std_vals = torch.from_numpy(self.processor.std.values)
-            mu_names = self.processor.mu.index.to_list()
-            std_names = self.processor.std.index.to_list()
-            return_dict = {"mu_vals": mu_vals, "std_vals": std_vals, "mu_names": mu_names, "std_names": std_names,
-                           "component_names": self.processor.component_names, "cond_names": self.processor.cond_names}
-        else:
-            return_dict = {"mu_vals": None, "std_vals": None, "mu_names": None, "std_names": None,
-                           "component_names": self.processor.component_names, "cond_names": self.processor.cond_names}
-            
-        return return_dict
-    
-    def _processor_attrs_from_prepare_load(self, save_dict):
-        if all([save_dict[key] is not None for key in ["mu_vals", "std_vals", "mu_names", "std_names"]]):
-            mu = pd.Series(save_dict["mu_vals"].numpy(), index=save_dict["mu_names"])
-            std = pd.Series(save_dict["std_vals"].numpy(), index=save_dict["std_names"])
-            return_dict = {"mu": mu, "std": std,
-                           "component_names": save_dict["component_names"], "cond_names": save_dict["cond_names"]}
-        else:
-            return_dict = {"mu": None, "std": None,
-                           "component_names": save_dict["component_names"], "cond_names": save_dict["cond_names"]}
-        
-        return return_dict
     
     #Some important attributes that should be accessible
     @property
@@ -784,7 +748,7 @@ Leaky ReLU slope: {flow_hypers["network_args"][2]}"""
 #Example for a definition dictionary
 #We recommend to use this as a template for your own models. Simply copy and paste and change the values accordingly.
 example_definition = {
-    #Processor tu use (str as registered in func_handle)
+    #Processor to use (str as registered in func_handle)
     "processor": "Processor_cond",
     #Processor init args
     "processor_args": {},
@@ -792,6 +756,8 @@ example_definition = {
     "processor_data": {"folder": "all_sims"},
     #Processor cleaning_function args
     "processor_clean": {"N_min":500},
+    #Flow to use (str as registered in func_handle)
+    "flow": "NSFlow",
     #Flow hyperparameters
     "flow_hyper": {"n_layers":14, "dim_notcond": 10, "dim_cond": 4, "CL":"NSF_CL2", "K": 10, "B":3, "network":"MLP", "network_args":torch.tensor([128,4,0.2])},
     #Parameters for choosing the subset of the data to use:
