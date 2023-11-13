@@ -250,43 +250,6 @@ def _custom_copy(galaxy, copy_data=True):
     return galaxy
 
 
-class Processor():
-    def __init__(self, R_max=50, feh_min=-0.3, ofe_min=-4):
-        self.R_max = R_max
-        self.feh_min = feh_min
-        self.ofe_min = ofe_min
-    
-
-    def get_data(self, data_path):
-        #y,y,z vx,vy,vz metals feh,ofe [mass] age/Gyr
-        Data = np.load(data_path).T
-        self.M_stars = np.sum(Data[:,9])
-        return Data
-    
-    def constrain_data(self, Data):
-        is_valid = (Data[:,7] >=self.ofe_min)&(Data[:,8]>=self.feh_min)&(np.sqrt(np.sum(Data[:,:3]**2, axis=1))<=self.R_max)
-        Data_c = Data[is_valid].copy()
-        self.M_stars = np.sum(Data_c[:,9])
-        return Data_c[:,np.array(9*[True]+[False]+[True])]
-    
-    def Data_to_flow(self, Data):
-        Data_p = torch.from_numpy(np.copy(Data)).type(torch.float)
-        self.mu = Data_p.mean(dim=0)
-        self.std = Data_p.std(dim=0)
-        Data_p -= self.mu
-        Data_p /= self.std
-        return Data_p
-    
-    def sample_flow(self, model, N_samples, GPUs=None ,split_size=500000):
-        model.eval()
-        sample = mp_evaluate(model, {"N":N_samples}, mode="sample", GPUs=GPUs, split_size=split_size)
-        return sample
-    
-    def sample_to_Data(self, raw):
-        Data = raw*self.std+self.mu
-        return Data.numpy()
-
-
 class Processor_cond():
     """
     Processor for conditional model. Made to complete several tidious tasks along the workflow of training and evaluating a conditional normalizing flow.
