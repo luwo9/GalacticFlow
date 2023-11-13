@@ -22,7 +22,6 @@ import torch.multiprocessing as mp
 #Register functions with a string name, so they can be saved and loaded with safe_mode=True (without pickle)
 func_handle ={
     "Processor_cond": processing.Processor_cond,
-    "Processor": processing.Processor,
     "NSFlow": flowcode.NSFlow,
     "NSF_CL": flowcode.NSF_CL,
     "NSF_CL2": flowcode.NSF_CL2,
