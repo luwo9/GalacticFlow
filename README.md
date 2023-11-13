@@ -6,3 +6,11 @@ GalacticFlow applies machine learning to astrophysics. It uses conditional norma
 
 ## User guide
 While it is possible to work on a very low level with maximum flexibility, see `Base_Processor_Workflow.ipynb`, its strongly recommended to use the user friendly API. The usage of the API is documented in `API_Workflow.ipynb`, it allows loading pretrained models, defining and taining your own ones, sampling a glaxy, as well as evaluating its pdf with minimum effort and code. It implements the low level workflow under the hood, so it might still be insightful to read `Base_Processor_Workflow.ipynb`.
+
+### Reproducing NeurIPS paper results
+`reproduce.ipynb` also provides the direct teps to reproduce the results in the paper. The packages used in our python (3.8.10) environment can be found in `requirements.txt` (not all packages are necessary to run GalacticFlow).
+The data used, as well as the pre trained models can be found at https://doi.org/10.5281/zenodo.8389555 for download.
+The data must be contained in the `all_sims` folder in your current directory for the pre trained models to work, you can put the models in any folder and specify the right path whenever needed.
+
+### Reusing the code
+`Adapting_GF.ipynb` provides more details on how to adapt the code to your own data and needs.
