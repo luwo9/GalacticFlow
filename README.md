@@ -10,7 +10,7 @@ While it is possible to work on a very low level with maximum flexibility, see `
 
 ### Reproducing NeurIPS paper results
 `reproduce.ipynb` also provides the direct teps to reproduce the results in the paper. The packages used in our python (3.8.10) environment can be found in `requirements.txt` (not all packages are necessary to run GalacticFlow).
-The data used, as well as the pre trained models can be found at https://doi.org/10.5281/zenodo.8389555 for download.
+The data used, as well as the pre trained models can be found at [Zenodo](https://doi.org/10.5281/zenodo.8389554) for download.
 The data must be contained in the `all_sims` folder in your current directory for the pre trained models to work, you can put the models in any folder and specify the right path whenever needed.
 
 ### Reusing the code
